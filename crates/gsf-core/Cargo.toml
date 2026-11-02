@@ -1,0 +1,17 @@
+[package]
+name = "gsf-core"
+description = "Parseur des SavedVariables GSF et modèle normalisé, sans dépendance Tauri."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# Oracle de parsing : uniquement dans les tests (Lua 5.1 vendored, sans stdlib).
+mlua = { version = "0.11", features = ["lua51", "vendored", "serialize"] }

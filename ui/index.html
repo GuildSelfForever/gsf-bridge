@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GSF Bridge</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>GSF Bridge</h1>
+        <p class="subtitle">Guild Self Forever</p>
+      </header>
+
+      <section id="welcome" class="status-card" aria-labelledby="welcome-title" hidden>
+        <h2 id="welcome-title">Bienvenue</h2>
+        <p>Ce que fait le bridge :</p>
+        <ul class="welcome-list">
+          <li>Il lit les fichiers de sauvegarde de l'addon GuildSelfForever, sans jamais les modifier.</li>
+          <li>Il regarde seulement le nom des programmes ouverts pour savoir si WoW est lancé (jamais la mémoire du jeu).</li>
+          <li>Une fois connecté, il envoie à gsforever.com les triches vues en jeu par l'addon (sur tes persos ou reçues des autres), tes audits et les morts. Pas la liste de ta guilde : seul le bridge d'un officier ou d'un collecteur de confiance l'envoie aussi.</li>
+          <li>Une fois connecté, il dit toutes les 5 minutes à gsforever.com qu'il est lancé et si WoW est ouvert, pour savoir à quelles heures la guilde est surveillée.</li>
+          <li>Quand WoW est fermé, il écrit l'addon de données de la guilde : liste des bannis, guildes alliées et, selon ton niveau, canal de la fédération, tombola, joueurs blanchis.</li>
+          <li>Avant que tu te connectes, il contacte gsforever.com seulement pour chercher les mises à jour. Rien d'autre.</li>
+        </ul>
+        <p>
+          <button id="welcome-repo-btn" type="button" class="secondary">Voir le code source sur GitHub</button>
+        </p>
+        <div class="field">
+          <label class="check" for="welcome-autostart">
+            <input id="welcome-autostart" type="checkbox" checked />
+            Lancer le bridge au démarrage de l'ordinateur
+          </label>
+        </div>
+        <div class="actions">
+          <button id="welcome-connect-btn" type="button">Me connecter avec Discord</button>
+        </div>
+        <p id="welcome-error" class="error" role="alert" hidden></p>
+      </section>
+
+      <div id="app-body" hidden>
+        <section class="status-card" aria-labelledby="headline">
+          <div class="headline-row">
+            <span id="dot" class="dot" data-tone="busy" aria-hidden="true"></span>
+            <p id="headline" class="headline" role="status" aria-live="polite">Chargement…</p>
+          </div>
+          <p id="facts" class="facts"></p>
+          <div class="actions">
+            <button id="action-btn" type="button" hidden></button>
+            <button id="sync-btn" type="button" class="secondary" hidden>Envoyer maintenant</button>
+            <button id="update-later-btn" type="button" class="secondary" hidden></button>
+          </div>
+          <p id="error" class="error" role="alert" hidden></p>
+        </section>
+
+        <details id="settings" class="panel">
+          <summary>Réglages</summary>
+          <div class="panel-body">
+            <div class="field">
+              <label class="check" for="autostart">
+                <input id="autostart" type="checkbox" />
+                Lancer au démarrage de l'ordinateur
+              </label>
+              <p class="hint">GSF Bridge démarre caché près de l'horloge et envoie tes données tout seul. Fermer la fenêtre ne l'arrête pas : clic droit sur son icône puis « Quitter ».</p>
+              <p id="autostart-error" class="error" role="alert" hidden></p>
+            </div>
+
+            <div class="field">
+              <p class="label">Dossier de WoW</p>
+              <p id="wow-root" class="value"></p>
+              <div class="row">
+                <button id="choose-dir-btn" type="button" class="secondary">Choisir le dossier de WoW</button>
+                <button id="auto-dir-btn" type="button" class="secondary" hidden>Trouver WoW automatiquement</button>
+              </div>
+            </div>
+
+            <div class="field">
+              <p class="label">Compte</p>
+              <p id="account" class="value"></p>
+              <div class="row">
+                <button id="discord-login-btn" type="button" class="secondary">Me connecter avec Discord</button>
+                <button id="logout-btn" type="button" class="secondary" hidden>Se déconnecter</button>
+              </div>
+              <p class="hint">Les officiers peuvent aussi se connecter avec leur identifiant sur la page du site.</p>
+            </div>
+
+            <details class="panel inner">
+              <summary>Journal</summary>
+              <ol id="log" class="log"></ol>
+            </details>
+
+            <p class="hint">Version <span id="version">…</span></p>
+          </div>
+        </details>
+      </div>
+    </main>
+
+    <dialog id="update-dialog" aria-labelledby="update-title" aria-describedby="update-body">
+      <h2 id="update-title">Nouvelle version disponible</h2>
+      <p id="update-body"></p>
+      <p id="update-mandatory" class="mandatory" hidden>
+        Cette mise à jour est obligatoire : le site n'accepte plus la version actuelle.
+      </p>
+      <div id="update-notes" class="notes" hidden></div>
+      <div id="update-progress-wrap" class="progress-wrap" hidden>
+        <progress id="update-progress" max="100" aria-describedby="update-progress-label"></progress>
+        <p id="update-progress-label" class="hint" aria-live="polite"></p>
+      </div>
+      <p id="update-error" class="error" role="alert" hidden></p>
+      <div class="actions end">
+        <button id="update-later" type="button" class="secondary">Plus tard</button>
+        <button id="update-now" type="button">Mettre à jour maintenant</button>
+      </div>
+    </dialog>
+
+    <script src="main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permissions de la fenêtre principale. Démarrage avec Windows et notifications sont pilotés côté Rust : aucune permission de plugin en plus.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "process:allow-restart"
+  ]
+}

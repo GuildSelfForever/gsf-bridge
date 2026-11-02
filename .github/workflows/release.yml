@@ -1,0 +1,379 @@
+name: Release
+
+# Publie une version quand la version du workspace (Cargo.toml, reprise par
+# src-tauri/tauri.conf.json) change sur main et que le tag vX.Y.Z n'existe pas.
+#
+# 1. Builds sans aucun secret ni cache : Windows NSIS (obligatoire), macOS universel
+#    (.dmg + .app.tar.gz) et Linux (.AppImage + .deb), ces deux derniers sans bloquer Windows.
+# 2. Signature pour l'updater dans un job à part (environnement protégé « release »),
+#    sans cache ni action tierce : seule la CLI Tauri (crates.io, version figée) voit la clé.
+#    SHA256SUMS et attestation de build (dépôt public seulement) sur tous les fichiers.
+# 3. GitHub Release, puis dépôt sur le VPS (`php artisan gsf:bridge-release`, une fois par
+#    plateforme). Sans secrets DEPLOY_*, l'étape VPS est sautée.
+#
+# Lancement manuel : « dry_run » (coché par défaut) construit et signe sans publier.
+# Noms des fichiers publiés inchangés (le site et l'updater en dépendent) :
+#   gsf-bridge_X.Y.Z_x64-setup.exe(.sig), gsf-bridge_X.Y.Z_universal.app.tar.gz(.sig),
+#   gsf-bridge_X.Y.Z_universal.dmg, gsf-bridge_X.Y.Z_amd64.AppImage(.sig), gsf-bridge_X.Y.Z_amd64.deb.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Construire et signer sans publier (ni GitHub Release, ni VPS)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TAURI_CLI_VERSION: 2.12.4
+
+jobs:
+  detect:
+    name: Version à publier ?
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - id: v
+        name: Lire la version et chercher le tag
+        shell: bash
+        env:
+          DRY_RUN: ${{ inputs.dry_run == true }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(jq -r '.version // empty' src-tauri/tauri.conf.json)
+          if [ -z "$version" ]; then
+            version=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version *= *"\([^"]*\)".*/\1/p}' Cargo.toml | head -1)
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::version invalide ou introuvable : '$version'"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Essai à blanc de $version : build et signature, rien n'est publié."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          elif gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$version" > /dev/null 2>&1; then
+            echo "Tag v$version déjà présent : rien à publier."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Nouvelle version $version."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-windows:
+    name: Installeur Windows (build)
+    needs: detect
+    if: needs.detect.outputs.release == 'true'
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.detect.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Vérifier la clé publique de l'updater
+        shell: bash
+        run: |
+          if grep -q 'REMPLACER_PAR_LA_CLE_PUBLIQUE' src-tauri/tauri.conf.json; then
+            echo "::error::plugins.updater.pubkey de src-tauri/tauri.conf.json n'est pas renseignée"
+            exit 1
+          fi
+      - name: Rust (version de rust-toolchain.toml)
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+      - name: CLI Tauri (crates.io, version figée)
+        run: cargo install tauri-cli --version "=${{ env.TAURI_CLI_VERSION }}" --locked
+      - name: Tests
+        timeout-minutes: 20
+        run: cargo test --locked -p gsf-core -p gsf-sync
+      - name: Build NSIS
+        run: cargo tauri build --bundles nsis
+      - name: Rassembler l'installeur
+        shell: bash
+        run: |
+          exe=$(ls target/release/bundle/nsis/*_"${VERSION}"_*-setup.exe 2> /dev/null | head -1)
+          if [ -z "$exe" ]; then
+            echo "::error::installeur introuvable"
+            ls -R target/release/bundle || true
+            exit 1
+          fi
+          mkdir -p dist
+          cp "$exe" "dist/gsf-bridge_${VERSION}_x64-setup.exe"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gsf-bridge-unsigned-windows
+          path: dist/*
+          if-no-files-found: error
+
+  build-macos:
+    name: Appli macOS universelle (build)
+    needs: detect
+    if: needs.detect.outputs.release == 'true'
+    runs-on: macos-latest
+    continue-on-error: true
+    env:
+      VERSION: ${{ needs.detect.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Rust (version de rust-toolchain.toml)
+        run: |
+          channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --no-self-update \
+            --target aarch64-apple-darwin,x86_64-apple-darwin
+      - name: CLI Tauri (crates.io, version figée)
+        run: cargo install tauri-cli --version "=${{ env.TAURI_CLI_VERSION }}" --locked
+      - name: Build .app + .dmg
+        run: cargo tauri build --target universal-apple-darwin --bundles app,dmg
+      - name: Rassembler l'appli et l'archive de mise à jour
+        # L'archive de mise à jour est le .app en tar.gz, comme la produit `tauri build`
+        # (dossier .app à la racine de l'archive, liens symboliques gardés).
+        run: |
+          base=target/universal-apple-darwin/release/bundle
+          app=$(ls -d "$base"/macos/*.app 2> /dev/null | head -1)
+          dmg=$(ls "$base"/dmg/*.dmg 2> /dev/null | head -1)
+          if [ -z "$app" ] || [ -z "$dmg" ]; then
+            echo "::error::appli macOS introuvable"
+            ls -R "$base" || true
+            exit 1
+          fi
+          mkdir -p dist
+          COPYFILE_DISABLE=1 tar -czf "dist/gsf-bridge_${VERSION}_universal.app.tar.gz" \
+            -C "$(dirname "$app")" "$(basename "$app")"
+          cp "$dmg" "dist/gsf-bridge_${VERSION}_universal.dmg"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gsf-bridge-unsigned-macos
+          path: dist/*
+          if-no-files-found: error
+
+  build-linux:
+    name: Appli Linux AppImage + deb (build)
+    needs: detect
+    if: needs.detect.outputs.release == 'true'
+    # Ubuntu 22.04 : glibc assez ancienne pour que l'AppImage tourne sur la plupart des distributions.
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    env:
+      VERSION: ${{ needs.detect.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Bibliothèques système de Tauri
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Rust (version de rust-toolchain.toml)
+        run: |
+          channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+      - name: CLI Tauri (crates.io, version figée)
+        run: cargo install tauri-cli --version "=${{ env.TAURI_CLI_VERSION }}" --locked
+      - name: Build AppImage + deb
+        run: cargo tauri build --bundles appimage,deb
+      - name: Rassembler AppImage et deb
+        run: |
+          base=target/release/bundle
+          app=$(ls "$base"/appimage/*.AppImage 2> /dev/null | head -1)
+          deb=$(ls "$base"/deb/*.deb 2> /dev/null | head -1)
+          if [ -z "$app" ] || [ -z "$deb" ]; then
+            echo "::error::AppImage ou deb introuvable"
+            ls -R "$base" || true
+            exit 1
+          fi
+          mkdir -p dist
+          cp "$app" "dist/gsf-bridge_${VERSION}_amd64.AppImage"
+          cp "$deb" "dist/gsf-bridge_${VERSION}_amd64.deb"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gsf-bridge-unsigned-linux
+          path: dist/*
+          if-no-files-found: error
+
+  sign:
+    name: Signature, SHA256SUMS et attestation
+    needs: [detect, build-windows, build-macos, build-linux]
+    # Windows obligatoire ; macOS et Linux signés s'ils ont été construits.
+    if: always() && needs.build-windows.result == 'success'
+    runs-on: ubuntu-latest
+    # Environnement protégé : y ranger TAURI_SIGNING_PRIVATE_KEY(_PASSWORD) et n'autoriser que main.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.detect.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Rust (version de rust-toolchain.toml)
+        run: |
+          channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --no-self-update
+      - name: CLI Tauri (crates.io, version figée, sans cache)
+        # Installée avant que la clé n'entre dans l'environnement d'une étape.
+        run: cargo install tauri-cli --version "=${{ env.TAURI_CLI_VERSION }}" --locked
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: gsf-bridge-unsigned-*
+          merge-multiple: true
+          path: dist
+      - name: Signer les fichiers de mise à jour
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::secret TAURI_SIGNING_PRIVATE_KEY absent (voir README, « Publication »)"
+            exit 1
+          fi
+          test -f "dist/gsf-bridge_${VERSION}_x64-setup.exe"
+          for f in "dist/gsf-bridge_${VERSION}_x64-setup.exe" \
+                   "dist/gsf-bridge_${VERSION}_universal.app.tar.gz" \
+                   "dist/gsf-bridge_${VERSION}_amd64.AppImage"; do
+            [ -f "$f" ] || { echo "::notice::$(basename "$f") absent (build non réussi), non signé"; continue; }
+            cargo tauri signer sign --app-version "$VERSION" "$f" < /dev/null
+            test -s "$f.sig"
+          done
+          ls -l dist
+      - name: SHA256SUMS
+        run: |
+          cd dist
+          sha256sum gsf-bridge_* > SHA256SUMS
+          cat SHA256SUMS
+      - name: Attestation de build (provenance)
+        # Gratuite seulement pour un dépôt public : sautée tant que le dépôt est privé.
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gsf-bridge-release
+          path: dist/*
+          if-no-files-found: error
+
+  github-release:
+    name: GitHub Release
+    needs: [detect, sign]
+    if: always() && needs.sign.result == 'success' && inputs.dry_run != true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.detect.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: gsf-bridge-release
+          path: dist
+      - name: Créer la release et le tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git log -1 --pretty=%B > notes.txt
+          gh release create "v$VERSION" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "GSF Bridge $VERSION" \
+            --notes-file notes.txt
+
+  deploy:
+    name: Publication sur le VPS
+    needs: [detect, github-release]
+    if: always() && needs.github-release.result == 'success'
+    runs-on: ubuntu-latest
+    environment: release
+    env:
+      VERSION: ${{ needs.detect.outputs.version }}
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+    steps:
+      - id: check
+        name: Secrets de déploiement présents ?
+        run: |
+          if [ -z "$DEPLOY_HOST" ] || [ -z "$DEPLOY_USER" ] || [ -z "$DEPLOY_SSH_KEY" ]; then
+            echo "::notice::Secrets DEPLOY_HOST / DEPLOY_USER / DEPLOY_SSH_KEY absents : publication VPS ignorée."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.check.outputs.enabled == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - if: steps.check.outputs.enabled == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: gsf-bridge-release
+          path: dist
+      - if: steps.check.outputs.enabled == 'true'
+        name: Clé SSH
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          if [ -n "$DEPLOY_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -p "${DEPLOY_PORT:-22}" "$DEPLOY_HOST" > ~/.ssh/known_hosts
+          fi
+      - if: steps.check.outputs.enabled == 'true'
+        name: Envoyer et enregistrer la version (artisan gsf:bridge-release)
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${DEPLOY_PORT:-22}"
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          ssh_opts=(-i ~/.ssh/deploy_key -o BatchMode=yes -o IdentitiesOnly=yes)
+          remote_dir="/tmp/gsf-bridge-release-$VERSION"
+          notes=$(git log -1 --pretty=%s)
+          ssh "${ssh_opts[@]}" -p "$port" "$target" "mkdir -p $(printf '%q' "$remote_dir")"
+          scp "${ssh_opts[@]}" -P "$port" dist/* "$target:$remote_dir/"
+          # Une ligne par plateforme : cible arch fichier-de-mise-à-jour [fichier-à-télécharger].
+          # Windows d'abord (une nouvelle version repart de zéro), puis ce qui a été construit et signé.
+          platforms=("windows x86_64 gsf-bridge_${VERSION}_x64-setup.exe")
+          if [ -f "dist/gsf-bridge_${VERSION}_universal.app.tar.gz.sig" ] && [ -f "dist/gsf-bridge_${VERSION}_universal.dmg" ]; then
+            platforms+=("darwin aarch64 gsf-bridge_${VERSION}_universal.app.tar.gz gsf-bridge_${VERSION}_universal.dmg")
+            platforms+=("darwin x86_64 gsf-bridge_${VERSION}_universal.app.tar.gz gsf-bridge_${VERSION}_universal.dmg")
+          fi
+          if [ -f "dist/gsf-bridge_${VERSION}_amd64.AppImage.sig" ]; then
+            platforms+=("linux x86_64 gsf-bridge_${VERSION}_amd64.AppImage")
+          fi
+          cmd="cd /srv/gsf-web/current"
+          for line in "${platforms[@]}"; do
+            read -r tgt arch file download <<< "$line"
+            cmd+=$(printf ' && php artisan gsf:bridge-release %q %q %q --notes=%q --target=%q --arch=%q' \
+              "$VERSION" "$remote_dir/$file" "$remote_dir/$file.sig" "$notes" "$tgt" "$arch")
+            if [ -n "${download:-}" ]; then cmd+=$(printf ' --download=%q' "$remote_dir/$download"); fi
+          done
+          cmd+=$(printf '; status=$?; rm -rf %q; exit $status' "$remote_dir")
+          ssh "${ssh_opts[@]}" -p "$port" "$target" "$cmd"

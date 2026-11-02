@@ -1,0 +1,6 @@
+# Version de Rust figée : mêmes binaires d'un build à l'autre (CI et poste local).
+# La monter volontairement (et vérifier fmt, clippy et tests) plutôt que de suivre « stable ».
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

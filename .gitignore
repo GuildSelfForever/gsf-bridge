@@ -1,0 +1,14 @@
+# Rust
+/target
+/src-tauri/target
+
+# Tauri (schémas générés par tauri-build)
+/src-tauri/gen/schemas
+
+# Front (au cas où un bundler serait ajouté)
+node_modules/
+dist/
+
+# Secrets (clé de signature de l'updater, env)
+.env
+*.key

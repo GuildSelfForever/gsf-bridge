@@ -1,0 +1,14 @@
+# Configuration de gitleaks (CI, job « Recherche de secrets ») : règles par défaut,
+# plus une liste blanche de valeurs de test inventées qui ressemblent à des secrets.
+title = "GSF Bridge"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Valeurs de test inventées : mot de passe de canal factice, empreinte du BattleTag inventé Davin#54321"
+regexTarget = "secret"
+regexes = [
+  '''^0123456789abcdef$''',
+  '''^fa2ce2459aec6c5c0d72ca5991cd4cfd$''',
+]
