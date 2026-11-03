@@ -9,6 +9,7 @@
 //! lignes de sauvegarde à 13 ou 15 champs). Tout champ absent ou d'un type
 //! inattendu devient `None` ; rien ne panique.
 
+pub mod baseline;
 mod names;
 mod normalize;
 pub mod wire;
@@ -17,6 +18,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
+pub use baseline::{audit_baselines, AuditBaseline};
 pub use names::{
     clean_name, guild_key_from_parts, lower, normalize_guild_key, CharacterRef, Resolver,
     UnresolvedAlias,

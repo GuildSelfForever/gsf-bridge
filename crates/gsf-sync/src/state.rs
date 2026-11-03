@@ -21,6 +21,11 @@ pub struct Config {
     /// fois au premier lancement et conservé ensuite.
     #[serde(default)]
     pub device_id: Option<String>,
+    /// « Synchroniser mon addon entre mes ordinateurs » (contrat 2026-11-03) :
+    /// décochée par défaut. Cochée, le bridge envoie les photos d'audit des
+    /// persos de ce PC et reçoit celles de ses autres PC.
+    #[serde(default)]
+    pub audit_sync: bool,
 }
 
 /// Genre du token courant : officier (connexion navigateur, confiance
@@ -75,6 +80,15 @@ pub struct SyncState {
     /// n'envoie alors que les preuves de triche).
     #[serde(default)]
     pub pushed_collector: Option<bool>,
+    /// Empreinte des dernières photos d'audit acceptées par le site (contrat
+    /// 2026-11-03) : les mêmes ne sont pas renvoyées. Effacée quand la case
+    /// change, pour tout renvoyer à la prochaine coche.
+    #[serde(default)]
+    pub audit_baselines_hash: Option<String>,
+    /// Case décochée mais le site n'a pas encore confirmé avoir oublié les
+    /// photos du compte : redemandé à chaque minute jusqu'à la réponse.
+    #[serde(default)]
+    pub audit_forget_pending: bool,
 }
 
 impl SyncState {
