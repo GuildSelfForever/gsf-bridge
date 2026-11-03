@@ -23,6 +23,11 @@
 //!     bannedIdentities = { { bt = "32 hex", acct = "16 hex", reason = "texte", expiresAt = 1800000000 }, ... }, -- ban de la personne (contrat 2026-10-17)
 //!     collectorProofs = { { name = "perso", expiresAt = 1800000000, sig = "512 hex" }, ... }, -- collecteur prouvé (contrat 2026-11-02 b)
 //!     receivedViolations = { "trade_gold-1700000000-123", ... }, -- violations reçues par le site (contrat 2026-11-02 b)
+//!     auditBaselines = { { name = "perso", character = "Perso", savedAt = 1700000000, checksum = "123",
+//!                          adventureID = "A1", guildKey = "royaume#guilde",
+//!                          snapshot = { time = …, gold = …, bagSlots = …, items = { [id] = n }, equipment = { [slot] = "id:enchant" },
+//!                                       bank = { time = …, items = { [id] = n } } } }, ... },
+//!                      -- photos d'audit de ses autres PC (contrat 2026-11-03), seulement si la case est cochée
 //!     tombola = { -- tombola du streamer (contrat 2026-10-16), absente sans tombola
 //!         id = 12,
 //!         announce = { text = "Tombola en cours…", endsAt = 1800000000 }, -- absente hors inscriptions
@@ -68,6 +73,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use gsf_core::model::baseline::MAX_BASELINES;
+use gsf_core::model::AuditBaseline;
 use serde::{Deserialize, Serialize};
 
 use crate::fsutil::atomic_write;
@@ -326,6 +333,12 @@ pub struct PushedData {
     /// 2026-11-02 b) ; défaut vide.
     #[serde(default)]
     pub received_violations: Vec<String>,
+    /// Photos d'audit des persos du compte (contrat 2026-11-03, « Je joue sur
+    /// plusieurs ordinateurs ») : présentes seulement si le bridge les a
+    /// demandées (case cochée). Gardées brutes : chaque entrée est validée
+    /// seule à l'écriture, une entrée invalide n'invalide pas le reste.
+    #[serde(default)]
+    pub audit_baselines: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -549,6 +562,98 @@ fn proofs_and_received(data: &PushedData, warnings: &mut Vec<String>) -> (LuaVal
         ));
     }
     (LuaValue::Table(proofs), LuaValue::Table(received))
+}
+
+/// Table Lua `{ [clé] = nombre }` d'une liste `[[clé, nombre]]`.
+fn int_map(pairs: &[(i64, i64)]) -> LuaValue {
+    LuaValue::Table(
+        pairs
+            .iter()
+            .map(|&(k, v)| (LuaKey::Index(k), LuaValue::Int(v)))
+            .collect(),
+    )
+}
+
+/// Photo d'audit au format de l'addon (`makeBaselineRecord` d'`Audit.lua`) :
+/// `{ name, character?, savedAt, checksum, adventureID, guildKey, snapshot }`.
+fn baseline_value(b: &AuditBaseline) -> LuaValue {
+    let s = &b.snapshot;
+    let mut snap = vec![
+        (LuaKey::Name("time".into()), LuaValue::Int(s.time)),
+        (LuaKey::Name("gold".into()), LuaValue::Int(s.gold)),
+        (LuaKey::Name("bagSlots".into()), LuaValue::Int(s.bag_slots)),
+    ];
+    if s.legacy {
+        snap.push((LuaKey::Name("legacy".into()), LuaValue::Bool(true)));
+    }
+    snap.push((LuaKey::Name("items".into()), int_map(&s.items)));
+    snap.push((
+        LuaKey::Name("equipment".into()),
+        LuaValue::Table(
+            s.equipment
+                .iter()
+                .map(|(slot, v)| (LuaKey::Index(*slot), LuaValue::Str(v.clone())))
+                .collect(),
+        ),
+    ));
+    if let Some(bank) = &s.bank {
+        let mut fields = vec![(LuaKey::Name("time".into()), LuaValue::Int(bank.time))];
+        if bank.legacy {
+            fields.push((LuaKey::Name("legacy".into()), LuaValue::Bool(true)));
+        }
+        fields.push((LuaKey::Name("items".into()), int_map(&bank.items)));
+        snap.push((LuaKey::Name("bank".into()), LuaValue::Table(fields)));
+    }
+    let mut fields = vec![(LuaKey::Name("name".into()), LuaValue::Str(b.name.clone()))];
+    if let Some(c) = &b.character {
+        fields.push((LuaKey::Name("character".into()), LuaValue::Str(c.clone())));
+    }
+    fields.extend([
+        (LuaKey::Name("savedAt".into()), LuaValue::Int(b.saved_at)),
+        (
+            LuaKey::Name("checksum".into()),
+            LuaValue::Str(b.checksum.clone()),
+        ),
+        (
+            LuaKey::Name("adventureID".into()),
+            LuaValue::Str(b.adventure_id.clone()),
+        ),
+        (
+            LuaKey::Name("guildKey".into()),
+            LuaValue::Str(b.guild_key.clone()),
+        ),
+        (LuaKey::Name("snapshot".into()), LuaValue::Table(snap)),
+    ]);
+    LuaValue::Table(fields)
+}
+
+/// Table Lua `auditBaselines` : chaque photo validée seule
+/// ([`AuditBaseline::is_valid`]), [`MAX_BASELINES`] au plus.
+fn audit_baselines_value(raw: &[serde_json::Value], warnings: &mut Vec<String>) -> LuaValue {
+    let mut out = Vec::new();
+    let mut dropped = 0usize;
+    for (idx, v) in raw.iter().enumerate() {
+        if out.len() == MAX_BASELINES {
+            warnings.push(format!(
+                "{} photo(s) d'inventaire au-delà de {MAX_BASELINES} ignorée(s)",
+                raw.len() - idx
+            ));
+            break;
+        }
+        match serde_json::from_value::<AuditBaseline>(v.clone()) {
+            Ok(b) if b.is_valid() => out.push((
+                LuaKey::Index(i64::try_from(out.len() + 1).unwrap_or(i64::MAX)),
+                baseline_value(&b),
+            )),
+            _ => dropped += 1,
+        }
+    }
+    if dropped > 0 {
+        warnings.push(format!(
+            "{dropped} photo(s) d'inventaire reçue(s) ignorée(s) (invalides)"
+        ));
+    }
+    LuaValue::Table(out)
 }
 
 /// Contenu Lua de `GSF_PushedData` et remarques (bans écartés).
@@ -920,6 +1025,12 @@ pub fn to_addon_value(data: &PushedData) -> Result<(LuaValue, Vec<String>), Push
     {
         root.push((LuaKey::Name("tombola".into()), tombola));
     }
+    if let Some(raw) = &data.audit_baselines {
+        root.push((
+            LuaKey::Name("auditBaselines".into()),
+            audit_baselines_value(raw, &mut warnings),
+        ));
+    }
     Ok((LuaValue::Table(root), warnings))
 }
 
@@ -1131,6 +1242,55 @@ mod tests {
         assert_eq!(received, vec!["trade_gold-1700000000-123", "a.b:c-d_e"]);
         assert!(
             warnings.iter().any(|w| w.contains("3 identifiant(s)")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn audit_baselines_only_when_asked_and_each_entry_checked_alone() {
+        let mut d = sample();
+        let (lua, _) = render_data_lua(&d, "0.7.1").unwrap();
+        assert!(
+            !lua.contains("auditBaselines"),
+            "case décochée : clé absente"
+        );
+
+        d.audit_baselines = Some(Vec::new());
+        let (lua, _) = render_data_lua(&d, "0.7.1").unwrap();
+        assert!(lua.contains("auditBaselines = {}"), "{lua}");
+
+        let good = serde_json::json!({
+            "name": "tester", "saved_at": 1800, "checksum": "77", "adventure_id": "A1",
+            "guild_key": "realm#home",
+            "snapshot": {"time": 1800, "gold": 5, "items": [[12, 3]], "equipment": [[1, "12:0"]], "legacy": true}
+        });
+        let mut bad = good.clone();
+        bad["snapshot"]["gold"] = serde_json::json!(-1);
+        d.audit_baselines = Some(vec![bad, good, serde_json::json!("x")]);
+        let (lua, warnings) = render_data_lua(&d, "0.7.1").unwrap();
+        let sv = parse(lua.as_bytes()).unwrap();
+        let list = sv
+            .get("GSF_PushedData")
+            .unwrap()
+            .get("auditBaselines")
+            .unwrap();
+        let only = list.get(1i64).unwrap();
+        assert!(list.get(2i64).is_none());
+        assert_eq!(only.get("checksum").and_then(Value::as_str), Some("77"));
+        assert_eq!(only.get("character"), None);
+        let snap = only.get("snapshot").unwrap();
+        assert_eq!(snap.get("legacy").and_then(Value::as_bool), Some(true));
+        assert_eq!(snap.get("bagSlots").and_then(Value::as_i64), Some(0));
+        assert_eq!(
+            snap.get("items")
+                .unwrap()
+                .get(12i64)
+                .and_then(Value::as_i64),
+            Some(3)
+        );
+        assert!(snap.get("bank").is_none());
+        assert!(
+            warnings.iter().any(|w| w.contains("2 photo(s)")),
             "{warnings:?}"
         );
     }

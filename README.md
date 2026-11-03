@@ -54,13 +54,16 @@ Liste exacte, tirée du code (les chemins entre parenthèses renvoient au fichie
   officier ou un collecteur, empreintes d'identité des personnes bannies, liste noire, nom et mot de passe du canal
   de la fédération, tombola, joueurs blanchis, preuves signées par le site que ses persos sont collecteurs. Il y
   écrit aussi la liste des triches déjà bien reçues par le site (pour un membre : seulement celles de ses persos),
-  pour que l'addon sache qu'il peut arrêter de les renvoyer. Seulement dans les
+  pour que l'addon sache qu'il peut arrêter de les renvoyer. Si tu as coché « Synchroniser mon addon entre mes
+  ordinateurs », il y écrit aussi la dernière photo de tes persos prise sur tes autres ordinateurs (voir plus bas).
+  Seulement dans les
   versions de WoW où l'addon GuildSelfForever est installé, **seulement quand le jeu est fermé**, et seulement si le
   contenu a changé (`pushed.rs`). Il ne touche jamais aux fichiers de sauvegarde de l'addon.
 - **Ses propres fichiers**, dans son dossier de données (`state.rs`, `prefs.rs`, `queue.rs`) :
   - Windows : `%APPDATA%\fr.gs4ever.bridge\` ; Mac : `~/Library/Application Support/fr.gs4ever.bridge/` ;
     Linux : `~/.local/share/fr.gs4ever.bridge/` ;
-  - `config.json` (dossier de WoW choisi à la main, identifiant aléatoire de l'appareil), `state.json` (nom et
+  - `config.json` (dossier de WoW choisi à la main, identifiant aléatoire de l'appareil, case « Synchroniser mon
+    addon entre mes ordinateurs »), `state.json` (nom et
     rôle du compte connecté, date du dernier envoi, empreintes des envois déjà acceptés), `queue.json` (au plus
     20 envois en attente, par exemple quand le site est injoignable ou avant la connexion), `desktop.json`
     (écran d'accueil déjà vu, démarrage automatique déjà réglé…).
@@ -103,6 +106,16 @@ d'audience, aucune publicité. Chaque requête porte la version du bridge (`User
     non » avec la guilde active, pour que les officiers sachent à quelles heures la guilde est surveillée ;
     avec l'envoi des données, les sessions de jeu des persos « collecteurs » notées par l'addon.
   - toujours la recherche de mise à jour.
+- **Seulement si tu coches « Synchroniser mon addon entre mes ordinateurs »** (décochée par défaut, section « Je
+  joue sur plusieurs ordinateurs ? ») : l'addon garde sur chaque PC une photo de chaque perso (sacs, équipement, or,
+  banque) pour repérer ce qui a changé pendant que l'addon ne regardait pas. Case cochée, le bridge envoie au site,
+  avec ses envois habituels, la dernière photo des persos de ce PC (contenu des sacs, de l'équipement et de la
+  banque, or, date, identifiant d'aventure, guilde) ; il demande au site, au démarrage, à chaque minute quand le jeu
+  est fermé et avec les données habituelles, les photos prises sur tes autres PC, et les écrit dans
+  `GuildSelfForever_Data`, jeu fermé. Le site ne garde que la plus récente par perso, seulement pour des persos liés
+  à ton compte, et ne la renvoie qu'à tes propres bridges qui ont aussi coché la case. Décocher demande au site
+  d'effacer toutes les photos de ton compte (`engine.rs`, `baseline.rs`). Pas disponible pour un ancien bridge
+  « vigie » (pas de compte).
 - **Ce qui part dépend de ton niveau.** Un officier ou un collecteur de confiance (désigné par un officier sur le
   site) envoie tout ce qui est listé plus haut, dont la liste de la guilde. Un **membre** n'envoie que les preuves
   de triche : les triches détectées sur ses persos et celles que son addon a reçues, ses audits et ceux qu'il porte

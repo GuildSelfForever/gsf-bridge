@@ -18,6 +18,8 @@ use reqwest::{Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use gsf_core::model::AuditBaseline;
+
 use crate::pushed::PushedData;
 use crate::snapshot::Snapshot;
 
@@ -88,6 +90,28 @@ impl SnapshotResponse {
 
 /// Résultat de `POST /api/v1/bridge/devices` (enregistrement sans
 /// connexion d'un appareil « vigie »).
+/// Réponse de `POST /api/v1/bridge/audit-baselines` (contrat 2026-11-03).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct AuditBaselinesResponse {
+    /// Photos enregistrées (plus récentes que celles du site).
+    #[serde(default)]
+    pub stored: u64,
+    /// Photos plus anciennes ou égales à celles du site, gardées telles quelles.
+    #[serde(default)]
+    pub kept: u64,
+    /// Photos écartées et pourquoi (`not_linked`, `invalid`…).
+    #[serde(default)]
+    pub ignored: Vec<IgnoredBaseline>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct IgnoredBaseline {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceRegistration {
     /// `202 {"status":"pending"}`.
@@ -388,10 +412,27 @@ impl ApiClient {
         guild_key: Option<&str>,
         known: Option<&str>,
     ) -> Result<Option<PushedData>, ApiError> {
+        self.pushed_data_request(token, guild_key, known, false)
+            .await
+    }
+
+    /// Comme [`ApiClient::pushed_data_if_changed`], avec en plus
+    /// `audit_baselines=1` quand la case « Synchroniser mon addon entre mes
+    /// ordinateurs » est cochée (contrat 2026-11-03).
+    pub async fn pushed_data_request(
+        &self,
+        token: &str,
+        guild_key: Option<&str>,
+        known: Option<&str>,
+        audit_baselines: bool,
+    ) -> Result<Option<PushedData>, ApiError> {
         let mut url = Url::parse(&self.api("/bridge/pushed-data"))
             .map_err(|e| ApiError::Decode(e.to_string()))?;
         if let Some(key) = guild_key {
             url.query_pairs_mut().append_pair("guild_key", key);
+        }
+        if audit_baselines {
+            url.query_pairs_mut().append_pair("audit_baselines", "1");
         }
         let mut req = self.http.get(url).header(AUTHORIZATION, bearer(token)?);
         if let Some(version) = known.filter(|v| !v.is_empty() && !v.contains('"')) {
@@ -411,6 +452,52 @@ impl ApiClient {
 }
 
 /// Compresse en gzip.
+impl ApiClient {
+    /// `POST /api/v1/bridge/audit-baselines` (contrat 2026-11-03) : photos
+    /// d'audit des persos de ce PC, compressées comme les snapshots.
+    pub async fn post_audit_baselines(
+        &self,
+        token: &str,
+        baselines: &[AuditBaseline],
+    ) -> Result<AuditBaselinesResponse, ApiError> {
+        let json = serde_json::to_vec(&serde_json::json!({ "baselines": baselines }))
+            .map_err(|e| ApiError::Decode(e.to_string()))?;
+        let body = gzip(&json).map_err(|e| ApiError::Decode(e.to_string()))?;
+        let res = self
+            .http
+            .post(self.api("/bridge/audit-baselines"))
+            .header(AUTHORIZATION, bearer(token)?)
+            .header(CONTENT_TYPE, "application/json")
+            .header(CONTENT_ENCODING, "gzip")
+            .body(body)
+            .send()
+            .await
+            .map_err(network)?;
+        if res.status().is_success() {
+            decode(res).await
+        } else {
+            Err(error_from(res, true).await)
+        }
+    }
+
+    /// `DELETE /api/v1/bridge/audit-baselines` : case décochée, le site
+    /// oublie les photos du compte.
+    pub async fn forget_audit_baselines(&self, token: &str) -> Result<(), ApiError> {
+        let res = self
+            .http
+            .delete(self.api("/bridge/audit-baselines"))
+            .header(AUTHORIZATION, bearer(token)?)
+            .send()
+            .await
+            .map_err(network)?;
+        if res.status().is_success() {
+            Ok(())
+        } else {
+            Err(error_from(res, true).await)
+        }
+    }
+}
+
 pub fn gzip(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
     let mut enc = GzEncoder::new(Vec::new(), Compression::default());
     enc.write_all(bytes)?;

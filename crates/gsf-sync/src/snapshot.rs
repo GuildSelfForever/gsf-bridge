@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use gsf_core::model::{normalize, MODEL_VERSION};
+use gsf_core::model::{audit_baselines, normalize, AuditBaseline, MODEL_VERSION};
 use gsf_core::sv::SavedVariables;
 use serde::{Deserialize, Serialize};
 
@@ -120,6 +120,10 @@ pub struct BuiltSnapshot {
     pub snapshot: Snapshot,
     /// Repli `.bak`, fichiers de personnages ignorés…
     pub warnings: Vec<String>,
+    /// Photos d'audit des persos du compte (« Je joue sur plusieurs
+    /// ordinateurs », contrat 2026-11-03) : envoyées à part, seulement si la
+    /// case est cochée ; jamais dans `snapshot`.
+    pub baselines: Vec<AuditBaseline>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -182,6 +186,7 @@ pub fn build_snapshot(
     }
 
     let guilds = serde_json::to_value(normalize(&acc.sv, &characters))?;
+    let baselines = audit_baselines(&acc.sv, &characters);
     let snapshot = Snapshot {
         model_version: MODEL_VERSION,
         bridge_version: bridge_version.to_owned(),
@@ -198,6 +203,7 @@ pub fn build_snapshot(
         key,
         snapshot,
         warnings,
+        baselines,
     })
 }
 

@@ -214,6 +214,7 @@ pub(crate) mod tests {
                 written_at: None,
                 waiting_game_closed: false,
             },
+            audit_sync: false,
             log: Vec::new(),
             headline: Headline::default(),
         }

@@ -22,6 +22,8 @@ let updateDeferred = false;
 let installing = false;
 /** Recherche lancée pour une mise à jour obligatoire (une fois par lancement). */
 let requiredCheckDone = false;
+/** Case « plusieurs ordinateurs » en cours d'enregistrement. */
+let syncSaving = false;
 
 function fmtTime(epoch) {
   if (!epoch) return "";
@@ -110,6 +112,19 @@ function render(s) {
         s.connection.username
     : "Non connecté";
   $("logout-btn").hidden = !connected;
+
+  // Plusieurs ordinateurs (contrat 2026-11-03) : il faut un compte (Discord ou officier), pas une vigie.
+  const syncBox = $("audit-sync");
+  const syncUsable = connected && !isVigie;
+  if (!syncSaving) syncBox.checked = Boolean(s.audit_sync);
+  syncBox.disabled = syncSaving || (!syncUsable && !s.audit_sync);
+  const note = $("audit-sync-note");
+  note.textContent = syncUsable
+    ? ""
+    : isVigie
+      ? "Pour utiliser cette option, connecte le bridge avec Discord."
+      : "Connecte d'abord le bridge pour utiliser cette option.";
+  note.hidden = syncUsable;
   $("discord-login-btn").disabled = loggingIn;
 
   // Journal (du plus récent au plus ancien).
@@ -287,6 +302,25 @@ async function toggleAutostart() {
   await loadAutostart();
 }
 
+// --- Plusieurs ordinateurs (contrat 2026-11-03) ----------------------------
+
+async function toggleAuditSync() {
+  const box = $("audit-sync");
+  const err = $("audit-sync-error");
+  err.hidden = true;
+  syncSaving = true;
+  box.disabled = true;
+  try {
+    await tauri.core.invoke("set_audit_sync", { enabled: box.checked });
+  } catch (e) {
+    box.checked = !box.checked;
+    err.textContent = "Impossible de changer ce réglage. (" + String(e) + ")";
+    err.hidden = false;
+  }
+  syncSaving = false;
+  refresh().catch(() => {});
+}
+
 // --- Écran d'accueil (premier lancement, contrat étape 1) -------------------
 
 /** Conclut l'écran d'accueil (démarrage auto choisi) puis lance la connexion. */
@@ -343,6 +377,7 @@ async function init() {
   });
 
   $("autostart").addEventListener("change", toggleAutostart);
+  $("audit-sync").addEventListener("change", toggleAuditSync);
   // Le réglage peut changer hors de l'application (Gestionnaire des tâches).
   $("settings").addEventListener("toggle", () => {
     if ($("settings").open) loadAutostart();
