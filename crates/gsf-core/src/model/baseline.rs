@@ -32,9 +32,20 @@ const MAX_GOLD: i64 = 2_147_483_647;
 const MAX_ITEM_ID: i64 = 9_999_999;
 const MAX_COUNT: i64 = 1_000_000;
 const MAX_BAG_SLOTS: i64 = 1000;
+/// `/played` (contrat 2026-11-03 c) : mêmes bornes que l'addon
+/// (`PLAYED_MAX`, `PLAYED_OBSERVED_MAX`, `MAX_LEVEL` d'`Audit.lua`).
+pub const MAX_PLAYED: i64 = 2_147_483_647;
+pub const MAX_PLAYED_OBSERVED: i64 = 315_360_000;
+pub const MAX_LEVEL: i64 = 255;
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+/// Champ `/played` reçu du site : toute valeur qui n'est pas un entier i64
+/// donne `None` (champ écarté seul, jamais la photo).
+fn lenient_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
+    Ok(serde_json::Value::deserialize(d)?.as_i64())
 }
 
 /// Photo d'un perso, au format du contrat (JSON du site).
@@ -67,6 +78,52 @@ pub struct BaselineSnapshot {
     pub equipment: Vec<(i64, String)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bank: Option<BaselineBank>,
+    /// Dernier `/played` connu du serveur, en secondes (addon ≥ 0.22.11).
+    /// Hors `checksum` ; toujours avec `played_observed` (voir
+    /// [`BaselineSnapshot::sanitize_played`]).
+    #[serde(
+        default,
+        deserialize_with = "lenient_i64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub played: Option<i64>,
+    /// Secondes où l'addon a vu le perso en ligne depuis `played`.
+    #[serde(
+        default,
+        deserialize_with = "lenient_i64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub played_observed: Option<i64>,
+    /// Niveau du perso au moment de la photo (1 à 255).
+    #[serde(
+        default,
+        deserialize_with = "lenient_i64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub level: Option<i64>,
+}
+
+impl BaselineSnapshot {
+    /// Écarte les champs `/played` invalides sans toucher au reste de la
+    /// photo (ils sont hors `checksum`) : `played`/`played_observed` gardés
+    /// seulement ensemble, dans leurs bornes et avec une somme ≤
+    /// [`MAX_PLAYED`] (`snapshotPlayed` de l'addon) ; `level` seulement de 1
+    /// à [`MAX_LEVEL`].
+    pub fn sanitize_played(&mut self) {
+        let pair = match (self.played, self.played_observed) {
+            (Some(p), Some(o))
+                if (0..=MAX_PLAYED).contains(&p)
+                    && (0..=MAX_PLAYED_OBSERVED).contains(&o)
+                    && p + o <= MAX_PLAYED =>
+            {
+                Some((p, o))
+            }
+            _ => None,
+        };
+        self.played = pair.map(|(p, _)| p);
+        self.played_observed = pair.map(|(_, o)| o);
+        self.level = self.level.filter(|l| (1..=MAX_LEVEL).contains(l));
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,7 +267,7 @@ fn record(v: &Value, fallback_name: Option<&str>) -> Option<AuditBaseline> {
         }),
         _ => None,
     };
-    let baseline = AuditBaseline {
+    let mut baseline = AuditBaseline {
         name,
         character,
         saved_at: int(v, "savedAt").unwrap_or(time),
@@ -225,8 +282,12 @@ fn record(v: &Value, fallback_name: Option<&str>) -> Option<AuditBaseline> {
             items: item_map(snap.get("items"))?,
             equipment: equipment_map(snap.get("equipment"))?,
             bank,
+            played: int(snap, "played"),
+            played_observed: int(snap, "playedObserved"),
+            level: int(snap, "level"),
         },
     };
+    baseline.snapshot.sanitize_played();
     baseline.is_valid().then_some(baseline)
 }
 
@@ -380,6 +441,64 @@ mod tests {
             character_dir_name(r"WTF\Account\A\R\Dävin\SavedVariables\x.lua"),
             Some("Dävin")
         );
+    }
+
+    #[test]
+    fn played_fields_are_carried_outside_the_checksum() {
+        // Contrat 2026-11-03 c : `played`/`playedObserved`/`level` (addon ≥ 0.22.11).
+        let with = |extra: &str| {
+            let src = character(1800, 500).replace(
+                r#"["bagSlots"] = 64,"#,
+                &format!(r#"["bagSlots"] = 64, {extra}"#),
+            );
+            let chars = vec![(path(), parse(src.as_bytes()).unwrap())];
+            audit_baselines(&parse(b"").unwrap(), &chars).remove(0)
+        };
+        let plain = with("");
+        let b = with(r#"["played"] = 51210, ["playedObserved"] = 120, ["level"] = 20,"#);
+        assert_eq!(
+            (
+                b.snapshot.played,
+                b.snapshot.played_observed,
+                b.snapshot.level
+            ),
+            (Some(51_210), Some(120), Some(20))
+        );
+        assert_eq!(b.checksum, plain.checksum, "empreinte inchangée");
+        let json = serde_json::to_value(&b).unwrap();
+        assert_eq!(json["snapshot"]["played"], 51_210);
+        assert_eq!(json["snapshot"]["played_observed"], 120);
+        assert_eq!(json["snapshot"]["level"], 20);
+        // Sans eux : JSON identique à celui d'un bridge 0.7.2.
+        let json = serde_json::to_value(&plain).unwrap();
+        for k in ["played", "played_observed", "level"] {
+            assert!(json["snapshot"].get(k).is_none(), "{k}");
+        }
+        // Back-compat : une photo sans ces clés se relit.
+        let back: AuditBaseline = serde_json::from_value(json).unwrap();
+        assert_eq!(back, plain);
+
+        // L'un sans l'autre, hors bornes : écartés seuls, la photo reste.
+        for extra in [
+            r#"["played"] = 51210, ["level"] = 0,"#,
+            r#"["playedObserved"] = 5, ["level"] = 256,"#,
+            r#"["played"] = -1, ["playedObserved"] = 5,"#,
+            r#"["played"] = 5, ["playedObserved"] = 315360001,"#,
+            r#"["played"] = 2147483647, ["playedObserved"] = 1,"#,
+            r#"["played"] = "5", ["playedObserved"] = 5, ["level"] = "20","#,
+        ] {
+            let b = with(extra);
+            assert_eq!(
+                (
+                    b.snapshot.played,
+                    b.snapshot.played_observed,
+                    b.snapshot.level
+                ),
+                (None, None, None),
+                "{extra}"
+            );
+            assert!(b.is_valid());
+        }
     }
 
     #[test]

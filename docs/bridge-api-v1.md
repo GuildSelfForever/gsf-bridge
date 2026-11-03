@@ -856,3 +856,90 @@ tombolaPublic = {
   de plus de 14 jours (`generatedAt`), n'est plus montrée « en cours » (ni pastille ni message) ; les gains restent.
 - Les données ne changent qu'après une synchronisation du bridge jeu fermé : un tirage fait pendant la partie n'arrive
   qu'au prochain lancement du jeu (le gagnant reste prévenu par MP Discord, comme avant).
+
+---
+
+# Ajout 2026-11-03 (c) : `/played` dans l'audit (inactivité et absences : addon 0.22.11, bridge 0.7.3)
+
+L'addon note le temps de jeu serveur
+(`/played`) et le niveau dans chaque relevé A, et produit à la connexion un rapport « joué sans l'addon : X min » quand
+la hausse du `/played` dépasse de plus de 10 minutes le temps où l'addon a vu le perso en ligne. **Cas à examiner,
+jamais Tricheur automatique** (ni chez le joueur, ni chez l'officier qui le reçoit, ni sur le site). Tout est additif
+et optionnel : un ancien bridge ignore les nouveaux champs, un ancien site les ignore (il ne les garde pas, sans
+refuser l'envoi).
+
+## SavedVariables (addon ≥ 0.22.11 → bridge)
+
+- Relevé A, `GuildSelfForeverAuditBaseline.snapshot` (fichier du perso) et
+  `GuildFoundForeverDB.guilds[*].auditBaselineBackups[*].snapshot` (fichier compte), champs facultatifs :
+  - `played` (entier, 0 à 2147483647) : dernier `/played` total connu du serveur, en secondes ;
+  - `playedObserved` (entier, 0 à 315360000) : secondes où l'addon a vu le perso en ligne depuis cette valeur ;
+    temps de jeu attendu au moment du relevé = `played + playedObserved` ;
+  - `level` (entier, 1 à 255) : niveau du perso au moment du relevé.
+  `played` et `playedObserved` vont **toujours ensemble** (l'un sans l'autre = ignorés tous les deux). Ils
+  n'entrent **pas** dans `checksum` (`snapshotFingerprint` inchangé) : un ancien bridge ou un ancien addon qui ne les
+  transporte pas garde des empreintes valides.
+- Rapport d'audit, `auditReports[i]` (officier) et `GuildSelfForeverAuditPending.audits[i]` (joueur), champs
+  facultatifs, présents seulement dans un rapport « joué sans l'addon » :
+  - `playedBefore` (entier) : temps de jeu attendu d'après l'addon ; `playedAfter` (entier, > `playedBefore`) :
+    `/played` donné par le serveur à la connexion ; écart = `playedAfter − playedBefore` (> 600 s) ;
+  - `levelBefore`, `levelAfter` (entiers 1 à 255, facultatifs) : niveau du relevé de référence et niveau actuel.
+  Un tel rapport n'a ni objet, ni banque, ni équipement, ni variation d'or : `changeCount = 1`,
+  `missingBaseline` absent ; `from` = heure de la référence, `to` = heure du contrôle.
+
+## Forme sérialisée (`SerializeAudit` : `AUD`, `AUDO`, `XRLY`/`XRLF`, `bridgeCarriedAudits[*].payload`, `#audit`)
+
+Dernier jeton facultatif du corps : `P,<playedBefore>,<playedAfter>,<levelBefore>,<levelAfter>` (niveaux 0 = inconnu),
+un seul, `playedAfter > playedBefore`, valeurs 0 à 2147483647, niveaux 0 à 255 ; sinon tout le rapport est rejeté
+(jamais de rapport partiel). Exemple : `1800000000,1800090000,562,562,,0|P,51210,53910,20,22`.
+Les addons ≤ 0.22.10 et `App\Domain\Bridge\SerializedAudit` actuel rejettent ce jeton : ils n'accusent pas réception
+et ne classent personne. Tous les autres rapports gardent exactement l'ancien format.
+
+## Bridge (0.7.3, `gsf-core` `model`)
+
+- `AuditReport` : `played_before`, `played_after`, `level_before`, `level_after` (`Option<i64>`, omis du JSON
+  du snapshot si absents : un ancien rapport garde exactement le même JSON), lus depuis `playedBefore`,
+  `playedAfter`, `levelBefore`, `levelAfter` (entiers ; `played_*` de 0 à 2147483647, niveaux de 1 à 255, sinon
+  `None` ; `played_before`/`played_after` gardés seulement ensemble et si `played_after > played_before`, comme le
+  jeton `P`). Même lecture pour `audit_reports` et `audit_pending` ; envoyés aussi par un membre simple (preuves de
+  triche).
+- Audits portés (`bridge_carried_audits[*].payload`) : chaîne opaque, le jeton `P` voyage tel quel.
+- Photo multi-PC (`model::baseline`, ajout 2026-11-03) : `snapshot.played`, `snapshot.played_observed`,
+  `snapshot.level` facultatifs (mêmes bornes ; `played`/`played_observed` gardés seulement ensemble et si leur
+  somme ne dépasse pas 2147483647, comme `snapshotPlayed` de l'addon), hors `checksum` (le bridge ne touche pas à
+  l'empreinte) ; un champ invalide (hors bornes ou pas un entier) est écarté seul, la photo reste (à la lecture comme
+  à la réception du site) ; réécrits dans `GSF_PushedData.auditBaselines[i].snapshot` en `played`, `playedObserved`, `level`.
+  Sans eux, la photo de l'autre PC reste utilisée pour les sacs, mais l'addon n'a pas de `/played` de référence
+  (pas de signal).
+- Pas encore fait (facultatif, pour la liste des inactifs) : relevé du perso, `level` et `played` du dernier A de
+  chaque fichier de perso, avec `savedAt`.
+
+## Site (à faire)
+
+- Photos multi-PC (`App\Support\Bridge\AuditBaselines::snapshot`) : garder `played` (0 à 2147483647) et
+  `played_observed` (0 à 315360000) seulement ensemble et si leur somme ≤ 2147483647, et `level` (1 à 255), un champ
+  invalide écarté seul ; aujourd'hui ils sont jetés à la réécriture, donc la photo de l'autre PC arrive sans
+  `/played` de référence.
+- `audit_reports` : colonnes `played_before`, `played_after`, `level_before`, `level_after` (nullables).
+  `SerializedAudit::decode` accepte le jeton `P` (mêmes contrôles que l'addon).
+- Tribunal : règle « Joué sans l'addon » (écart `played_after − played_before`, seuil réglable, 10 min par défaut),
+  **à examiner**, jamais Tricheur automatique ; les règles existantes (objets, or, équipement) ne voient rien de
+  nouveau dans ce rapport (aucun changement d'objet). Phrase dans « Son histoire » : « Joué 45 min sans l'addon
+  (niveau 20 → 22) ».
+- Limites connues à afficher : un plantage du jeu (sauvegarde non écrite) ou un 2e PC sans la case « Synchroniser »
+  du bridge peuvent produire un écart ; le site peut le recouper avec `addon_seen_at` et les rapports de l'autre PC.
+
+## Addon (0.22.11, `Audit.lua`)
+
+- `RequestTimePlayed()` 5 s après le début du suivi (3 essais, 10 s d'attente) ; message de chat masqué pour cette
+  demande seulement (fenêtres de discussion désabonnées de `TIME_PLAYED_MSG`, réabonnées après la réponse, au bout de
+  10 s, ou tout de suite si le joueur tape `/played`). Tout `TIME_PLAYED_MSG` est une lecture valable.
+- Temps vu par l'addon mesuré avec `GetTime` (horloge de la session), jamais l'horloge système ou serveur.
+- Référence : le A choisi à la connexion (copie dédiée, secours du compte ou photo de l'autre PC), ses propres
+  `played`/`playedObserved` ; un A périmé (`/reload` avec ancienne copie, sauvegarde revenue en arrière) n'est pas
+  utilisé pour le `/played`. Marque de déconnexion `GSFAuditPlayedMark` (CVar : `<clé perso>:<attendu>:<heure>:<niveau>`) :
+  la valeur attendue la plus haute l'emporte ; une marque plus ancienne que le A choisi est ignorée, la marque est
+  effacée quand rien n'est connu et à une nouvelle inscription. Chaque session portée sans lecture serveur ajoute 60 s
+  de crédit (temps avant le chargement de l'addon, écrans de chargement).
+- Pas de signal : référence sans `/played` (premier passage après la mise à jour), pas de `TIME_PLAYED_MSG`,
+  nouvelle inscription, `/played` plus bas qu'attendu (noté « incohérent » dans `/gsf auditstatus`).

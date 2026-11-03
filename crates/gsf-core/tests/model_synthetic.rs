@@ -347,6 +347,73 @@ GuildFoundForeverDB = {{
 }
 
 #[test]
+fn played_fields_of_audit_reports_are_read_and_checked() {
+    // Contrat 2026-11-03 c : rapport « joué sans l'addon » (addon ≥ 0.22.11).
+    let account = sv(r#"
+GuildFoundForeverDB = { ["guilds"] = { ["r#g"] = {
+  ["auditReports"] = {
+    { ["id"] = "p", ["player"] = "Ann Bee", ["changeCount"] = 1,
+      ["playedBefore"] = 51210, ["playedAfter"] = 53910, ["levelBefore"] = 20, ["levelAfter"] = 22 },
+    { ["id"] = "old", ["player"] = "Ann Bee", ["changeCount"] = 2 },
+    { ["id"] = "down", ["player"] = "Ann Bee", ["playedBefore"] = 500, ["playedAfter"] = 500,
+      ["levelBefore"] = 0, ["levelAfter"] = 256 },
+    { ["id"] = "alone", ["player"] = "Ann Bee", ["playedAfter"] = 900, ["levelAfter"] = "22" },
+    { ["id"] = "huge", ["player"] = "Ann Bee", ["playedBefore"] = -1, ["playedAfter"] = 2147483648 },
+  },
+  ["bridgeCarriedAudits"] = {
+    ["ann bee:p"] = { ["player"] = "Ann Bee", ["id"] = "p",
+      ["payload"] = "1800000000,1800090000,562,562,,0|P,51210,53910,20,22" },
+  },
+} } }
+"#);
+    let g = &normalize(&account, NO_CHARS)[0];
+    let got: Vec<_> = g
+        .audit_reports
+        .iter()
+        .map(|a| {
+            (
+                a.id.as_str(),
+                a.played_before,
+                a.played_after,
+                a.level_before,
+                a.level_after,
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            // Triés par identifiant.
+            ("alone", None, None, None, None),
+            ("down", None, None, None, None),
+            ("huge", None, None, None, None),
+            ("old", None, None, None, None),
+            ("p", Some(51_210), Some(53_910), Some(20), Some(22)),
+        ]
+    );
+    // Le jeton `P` des audits portés voyage tel quel (le site le décode).
+    let carried = g.bridge_carried_audits.as_ref().unwrap();
+    assert!(carried[0].payload.ends_with("|P,51210,53910,20,22"));
+
+    let json = serde_json::to_value(g).unwrap();
+    let p = &json["audit_reports"][4];
+    assert_eq!(p["played_before"], 51_210);
+    assert_eq!(p["played_after"], 53_910);
+    assert_eq!(p["level_before"], 20);
+    assert_eq!(p["level_after"], 22);
+    // Ancien rapport : aucune clé ajoutée (même JSON, même hash qu'avant).
+    let old = json["audit_reports"][3].as_object().unwrap();
+    for k in [
+        "played_before",
+        "played_after",
+        "level_before",
+        "level_after",
+    ] {
+        assert!(!old.contains_key(k), "{k}");
+    }
+}
+
+#[test]
 fn unexpected_types_are_tolerated() {
     let account = sv(r#"
 GuildFoundForeverDB = { ["guilds"] = {

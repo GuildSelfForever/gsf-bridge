@@ -242,6 +242,20 @@ pub struct AuditReport {
     /// officier ; `None` = reçu du joueur audité lui-même. Pour un même
     /// audit, la version directe l'emporte toujours sur une version relayée.
     pub relayed_by: Option<String>,
+    /// Rapport « joué sans l'addon » (addon ≥ 0.22.11, contrat 2026-11-03 c) :
+    /// temps de jeu attendu d'après l'addon, en secondes. Omis si absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub played_before: Option<i64>,
+    /// `/played` du serveur à la connexion. `played_before`/`played_after`
+    /// vont ensemble (`played_after > played_before`), sinon tous deux `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub played_after: Option<i64>,
+    /// Niveau du relevé de référence (1 à 255).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level_before: Option<i64>,
+    /// Niveau au moment du contrôle (1 à 255).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level_after: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

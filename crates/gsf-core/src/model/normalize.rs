@@ -978,6 +978,15 @@ fn audit_from(
     let acked_by = entries(rec.get("ackedBy"))
         .filter_map(|(k, v)| Some((k.as_str_lossy()?.into_owned(), v.as_i64()?)))
         .collect();
+    // Couple tout ou rien, comme le jeton `P` de l'addon :
+    // `playedAfter` doit dépasser `playedBefore`.
+    let (played_before, played_after) = match (
+        int_in(rec, "playedBefore", 0, MAX_AUDIT_PLAYED),
+        int_in(rec, "playedAfter", 0, MAX_AUDIT_PLAYED),
+    ) {
+        (Some(before), Some(after)) if after > before => (Some(before), Some(after)),
+        _ => (None, None),
+    };
     Some(AuditReport {
         id,
         player,
@@ -1000,7 +1009,20 @@ fn audit_from(
         attempts: int(rec, "attempts"),
         next_send_at: int(rec, "nextSendAt"),
         relayed_by: text(rec, "relayedBy").filter(|n| !n.trim().is_empty()),
+        played_before,
+        played_after,
+        level_before: int_in(rec, "levelBefore", 1, MAX_AUDIT_LEVEL),
+        level_after: int_in(rec, "levelAfter", 1, MAX_AUDIT_LEVEL),
     })
+}
+
+/// Bornes du rapport « joué sans l'addon » (contrat 2026-11-03 c).
+const MAX_AUDIT_PLAYED: i64 = 2_147_483_647;
+const MAX_AUDIT_LEVEL: i64 = 255;
+
+/// Entier entre `min` et `max`, sinon `None`.
+fn int_in(v: &Value, k: &str, min: i64, max: i64) -> Option<i64> {
+    int(v, k).filter(|n| (min..=max).contains(n))
 }
 
 /// `auditTombstones["joueur:id"]` : un nombre (≤ 0.17.40) ou une table

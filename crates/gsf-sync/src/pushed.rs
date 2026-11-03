@@ -26,7 +26,8 @@
 //!     auditBaselines = { { name = "perso", character = "Perso", savedAt = 1700000000, checksum = "123",
 //!                          adventureID = "A1", guildKey = "royaume#guilde",
 //!                          snapshot = { time = …, gold = …, bagSlots = …, items = { [id] = n }, equipment = { [slot] = "id:enchant" },
-//!                                       bank = { time = …, items = { [id] = n } } } }, ... },
+//!                                       bank = { time = …, items = { [id] = n } },
+//!                                       played = …, playedObserved = …, level = … } }, ... }, -- /played : contrat 2026-11-03 c
 //!                      -- photos d'audit de ses autres PC (contrat 2026-11-03), seulement si la case est cochée
 //!     tombola = { -- tombola du streamer (contrat 2026-10-16), absente sans tombola
 //!         id = 12,
@@ -814,6 +815,18 @@ fn baseline_value(b: &AuditBaseline) -> LuaValue {
         fields.push((LuaKey::Name("items".into()), int_map(&bank.items)));
         snap.push((LuaKey::Name("bank".into()), LuaValue::Table(fields)));
     }
+    // `/played` (contrat 2026-11-03 c), hors `checksum` : déjà passés par
+    // `sanitize_played`, donc ensemble ou pas du tout.
+    if let (Some(played), Some(observed)) = (s.played, s.played_observed) {
+        snap.push((LuaKey::Name("played".into()), LuaValue::Int(played)));
+        snap.push((
+            LuaKey::Name("playedObserved".into()),
+            LuaValue::Int(observed),
+        ));
+    }
+    if let Some(level) = s.level {
+        snap.push((LuaKey::Name("level".into()), LuaValue::Int(level)));
+    }
     let mut fields = vec![(LuaKey::Name("name".into()), LuaValue::Str(b.name.clone()))];
     if let Some(c) = &b.character {
         fields.push((LuaKey::Name("character".into()), LuaValue::Str(c.clone())));
@@ -851,10 +864,13 @@ fn audit_baselines_value(raw: &[serde_json::Value], warnings: &mut Vec<String>) 
             break;
         }
         match serde_json::from_value::<AuditBaseline>(v.clone()) {
-            Ok(b) if b.is_valid() => out.push((
-                LuaKey::Index(i64::try_from(out.len() + 1).unwrap_or(i64::MAX)),
-                baseline_value(&b),
-            )),
+            Ok(mut b) if b.is_valid() => {
+                b.snapshot.sanitize_played();
+                out.push((
+                    LuaKey::Index(i64::try_from(out.len() + 1).unwrap_or(i64::MAX)),
+                    baseline_value(&b),
+                ));
+            }
             _ => dropped += 1,
         }
     }
@@ -1510,6 +1526,59 @@ mod tests {
             warnings.iter().any(|w| w.contains("2 photo(s)")),
             "{warnings:?}"
         );
+    }
+
+    #[test]
+    fn audit_baselines_carry_played_outside_the_checksum() {
+        // Contrat 2026-11-03 c : `played`, `played_observed`, `level` réécrits en
+        // `played`, `playedObserved`, `level` ; invalides écartés seuls.
+        let mut d = sample();
+        let base = serde_json::json!({
+            "name": "tester", "saved_at": 1800, "checksum": "77", "adventure_id": "A1",
+            "guild_key": "realm#home",
+            "snapshot": {"time": 1800, "gold": 5, "items": [], "equipment": [],
+                         "played": 51210, "played_observed": 120, "level": 20}
+        });
+        let mut lone = base.clone();
+        lone["name"] = serde_json::json!("lone");
+        lone["snapshot"]
+            .as_object_mut()
+            .unwrap()
+            .remove("played_observed");
+        lone["snapshot"]["level"] = serde_json::json!(0);
+        let mut old = base.clone();
+        old["name"] = serde_json::json!("old");
+        for k in ["played", "played_observed", "level"] {
+            old["snapshot"].as_object_mut().unwrap().remove(k);
+        }
+        let mut typed = base.clone();
+        typed["name"] = serde_json::json!("typed");
+        typed["snapshot"]["played"] = serde_json::json!("5");
+        typed["snapshot"]["played_observed"] = serde_json::json!(5.5);
+        typed["snapshot"]["level"] = serde_json::json!(1e30);
+        d.audit_baselines = Some(vec![base, lone, old, typed]);
+        let (lua, warnings) = render_data_lua(&d, "0.7.3").unwrap();
+        assert!(
+            !warnings.iter().any(|w| w.contains("photo")),
+            "{warnings:?}"
+        );
+        let sv = parse(lua.as_bytes()).unwrap();
+        let list = sv
+            .get("GSF_PushedData")
+            .unwrap()
+            .get("auditBaselines")
+            .unwrap();
+        let snap = |i: i64| list.get(i).unwrap().get("snapshot").unwrap();
+        let int = |i: i64, k: &str| snap(i).get(k).and_then(Value::as_i64);
+        assert_eq!(int(1, "played"), Some(51_210));
+        assert_eq!(int(1, "playedObserved"), Some(120));
+        assert_eq!(int(1, "level"), Some(20));
+        for i in [2, 3, 4] {
+            for k in ["played", "playedObserved", "level"] {
+                assert_eq!(snap(i).get(k), None, "photo {i} : {k}");
+            }
+            assert_eq!(int(i, "gold"), Some(5), "photo {i} gardée");
+        }
     }
 
     #[test]
