@@ -811,8 +811,8 @@ hash : une inscription, un tirage, un envoi changent la version.
 }
 ```
 
-- `id`, `status` (`open` ou `drawing`), `streamer` (nom du camp, ≤ 64 octets), `twitch` (identifiant de chaîne,
-  `[a-z0-9_]`, 25 au plus, null si inconnu), `draw_at` : la tombola en cours ; tous null sans tombola en cours.
+- `id`, `status` (`open` ou `drawing`), `streamer` (nom du camp, ≤ 64 octets), `twitch` (identifiant de chaîne mis
+  en minuscules, `[a-z0-9_]`, 25 au plus, null si inconnu ou invalide), `draw_at` : la tombola en cours ; tous null sans tombola en cours.
 - `lots` (50 au plus, ordre du streamer) : objet (`kind` `item`, `item_id` pour l'infobulle du jeu) ou lot libre
   (`free`, `details` ≤ 200 octets), `label` ≤ 160 octets sans `|` ni caractère de contrôle, `count` 1-1000,
   `min_level` = niveau minimum pour s'inscrire (niveau requis de l'objet − 5, null pour un lot libre), `drawn` = lot
@@ -852,5 +852,7 @@ tombolaPublic = {
   ouverte ou tirage pas encore vus, lot gagné pas encore vu) ; effacée à l'ouverture de l'onglet (vu gardé par guilde sur
   le compte WoW : tombola + statut, lots gagnés). Un message dans le chat une fois par session (connexion ou /reload) tant qu'une
   tombola est en cours ou qu'un lot gagné attend.
+- Données périmées (bridge qui ne synchronise plus) : une tombola dont le tirage date de plus de 24 h, ou des données
+  de plus de 14 jours (`generatedAt`), n'est plus montrée « en cours » (ni pastille ni message) ; les gains restent.
 - Les données ne changent qu'après une synchronisation du bridge jeu fermé : un tirage fait pendant la partie n'arrive
   qu'au prochain lancement du jeu (le gagnant reste prévenu par MP Discord, comme avant).

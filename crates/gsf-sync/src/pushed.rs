@@ -76,8 +76,9 @@
 //! [`MAX_RECEIVED_VIOLATIONS`] au maximum ; une entrée invalide est écartée
 //! seule. `tombolaPublic` (contrat 2026-11-03 b, onglet Tombola ouvert à
 //! tous) : chaque lot est écarté seul s'il est invalide (mêmes règles que les
-//! lots à envoyer, détail ≤ [`MAX_TOMBOLA_DETAILS_BYTES`], perso gagnant selon
-//! les règles de nom des bans), [`MAX_TOMBOLA_PUBLIC_LOTS`] lots et
+//! lots à envoyer, détail ≤ [`MAX_TOMBOLA_DETAILS_BYTES`], perso gagnant non
+//! vide ≤ 64 octets sans `|` ni caractère de contrôle, sinon omis),
+//! [`MAX_TOMBOLA_PUBLIC_LOTS`] lots et
 //! [`MAX_TOMBOLA_PUBLIC_WON`] gains au plus ; `twitch` gardé seulement s'il fait
 //! 1 à 25 caractères `[a-z0-9_]`, `status` seulement `open`/`drawing` ; la clé
 //! est omise s'il ne reste ni tombola en cours ni lot.
@@ -294,6 +295,11 @@ fn one() -> i64 {
     1
 }
 
+/// `null` → chaîne vide (le lot est ensuite écarté par la validation).
+fn null_as_empty<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
+}
+
 /// Tombola vue par chaque joueur (contrat 2026-11-03 b) : la tombola en
 /// cours et, pour le compte de ce bridge seulement, ses inscriptions et ses
 /// gains ; jamais le nom d'un autre joueur. Servie à tout bridge, membre
@@ -327,6 +333,8 @@ pub struct TombolaPublicLot {
     pub lot_id: i64,
     #[serde(default)]
     pub kind: Option<String>,
+    /// Libellé absent ou `null` : lot écarté seul, jamais toute la réponse.
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub label: String,
     #[serde(default)]
     pub item_id: Option<i64>,
@@ -2158,7 +2166,8 @@ mod tests {
                       {"lot_id":35,"kind":"free","label":"500 pièces d'or","item_id":null,"count":1,
                        "details":"Remis en jeu par Brindille","min_level":null,"drawn":false,"entered":false,"won":false},
                       {"lot_id":36,"kind":"item","label":"bad|label","count":1},
-                      {"lot_id":37,"kind":"boost","label":"Bad kind","count":1}
+                      {"lot_id":37,"kind":"boost","label":"Bad kind","count":1},
+                      {"lot_id":38,"kind":"item","label":null,"count":1}
                     ],
                     "won":[
                       {"lot_id":34,"kind":"item","label":"Cape de factionnaire","item_id":2059,"count":1,"details":null,
@@ -2169,7 +2178,7 @@ mod tests {
             .unwrap(),
         );
         let (v, warnings) = to_addon_value(&d).unwrap();
-        assert_eq!(warnings.len(), 5, "{warnings:?}"); // 2 bans + 2 lots + 1 gain invalides
+        assert_eq!(warnings.len(), 6, "{warnings:?}"); // 2 bans + 3 lots + 1 gain invalides
         let sv = parse(assignment("GSF_PushedData", &v).as_bytes()).unwrap();
         let t = sv
             .get("GSF_PushedData")
