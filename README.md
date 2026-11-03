@@ -50,7 +50,8 @@ Liste exacte, tirée du code (les chemins entre parenthèses renvoient au fichie
 ### Ce qu'il écrit
 
 - **L'addon de données `GuildSelfForever_Data`** : `Interface/AddOns/GuildSelfForever_Data/GuildSelfForever_Data.toc`
-  et `Data.lua`, avec ce que le site envoie : liste des bannis, guildes alliées, réglage des demandes et, pour un
+  et `Data.lua`, avec ce que le site envoie : liste des bannis, guildes alliées, réglage des demandes, tombola en
+  cours du streamer (lots, et pour ton compte seulement : tes inscriptions et tes gains) et, pour un
   officier ou un collecteur, empreintes d'identité des personnes bannies, liste noire, nom et mot de passe du canal
   de la fédération, tombola, joueurs blanchis, preuves signées par le site que ses persos sont collecteurs. Il y
   écrit aussi la liste des triches déjà bien reçues par le site (pour un membre : seulement celles de ses persos),

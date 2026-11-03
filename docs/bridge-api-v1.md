@@ -779,3 +779,80 @@ GSF_PushedData.auditBaselines = {
   de royaume relié), puis les validations habituelles (`baselineRecordValid` : forme, date ≤ maintenant + 5 min).
 - La plus récente gagne (`savedAt`) ; à égalité la copie dédiée garde la place. Gagnante : recopiée dans la copie
   dédiée (`source = "site"`, `recovered`), visible dans `/gsf auditstatus`.
+
+---
+
+# Ajout 2026-11-03 (b) : onglet Tombola ouvert à tous (site, bridge 0.7.2, addon 0.22.10)
+
+Décision streamer : l'onglet Tombola de l'addon n'est plus réservé aux officiers. Chaque joueur y voit la tombola en
+cours, les lots où il participe et s'il a gagné, avec une pastille « +1 » pour l'amener sur la chaîne du streamer
+pendant le tirage. Tout est additif : un ancien bridge ignore la clé, un ancien addon aussi ; `schema` inchangé ; la clé
+`tombola` des collecteurs (annonce, lots à envoyer) ne change pas.
+
+## Données poussées : `tombola_public` (`GET /api/v1/bridge/pushed-data`, **tout** bridge, membre simple compris)
+
+Clé **optionnelle**, présente seulement s'il y a une tombola aux inscriptions ouvertes ou en tirage (`open`,
+`drawing`) ou un lot gagné par le compte du jeton (absente sinon, et alors hors du hash `version`). Incluse dans le
+hash : une inscription, un tirage, un envoi changent la version.
+
+```json
+"tombola_public": {
+  "id": 12, "status": "open", "streamer": "Brindille", "twitch": "brindille", "draw_at": 1800000000,
+  "lots": [
+    { "lot_id": 34, "kind": "item", "label": "Cape de factionnaire", "item_id": 2059, "count": 1, "details": null,
+      "min_level": 25, "drawn": false, "entered": true, "won": false },
+    { "lot_id": 35, "kind": "free", "label": "500 pièces d'or", "item_id": null, "count": 1,
+      "details": "Remis en jeu par Brindille", "min_level": null, "drawn": false, "entered": false, "won": false }
+  ],
+  "won": [
+    { "lot_id": 30, "kind": "item", "label": "Bottes de marche", "item_id": 1234, "count": 1, "details": null,
+      "character": "Brindefer", "drawn_at": 1799990000, "sent": false }
+  ]
+}
+```
+
+- `id`, `status` (`open` ou `drawing`), `streamer` (nom du camp, ≤ 64 octets), `twitch` (identifiant de chaîne mis
+  en minuscules, `[a-z0-9_]`, 25 au plus, null si inconnu ou invalide), `draw_at` : la tombola en cours ; tous null sans tombola en cours.
+- `lots` (50 au plus, ordre du streamer) : objet (`kind` `item`, `item_id` pour l'infobulle du jeu) ou lot libre
+  (`free`, `details` ≤ 200 octets), `label` ≤ 160 octets sans `|` ni caractère de contrôle, `count` 1-1000,
+  `min_level` = niveau minimum pour s'inscrire (niveau requis de l'objet − 5, null pour un lot libre), `drawn` = lot
+  déjà tiré (sans dire par qui), `entered` / `won` = **pour le compte du jeton seulement**.
+- `won` (20 au plus, plus récents d'abord) : lots gagnés par le compte du jeton, toutes tombolas non annulées, pas
+  encore envoyés ou envoyés depuis moins de 7 jours (`sent`) ; `character` = son perso qui reçoit le lot.
+- **Jamais** un autre joueur : ni nom d'inscrit, ni gagnant, ni nombre d'inscrits par compte. Une vigie (compte de
+  service) reçoit la tombola en cours sans `entered`/`won` ni `won[]`.
+
+## Bridge (0.7.2) : `tombolaPublic`
+
+Chaque lot validé seul (écarté s'il est invalide : `lot_id` < 1, `kind` autre que `item`/`free`, libellé invalide,
+`count` hors 1-1000), `details`/`character` gardés seulement s'ils sont valides, `min_level` seulement entre 1 et 100,
+`status` seulement `open`/`drawing`, `twitch` seulement `[a-z0-9_]{1,25}`, booléens écrits seulement s'ils sont vrais ;
+clé omise s'il ne reste ni `id` ni lot :
+
+```lua
+tombolaPublic = {
+    id = 12, status = "open", streamer = "Brindille", twitch = "brindille", drawAt = 1800000000,
+    lots = {
+        { lotId = 34, kind = "item", label = "Cape de factionnaire", itemId = 2059, count = 1, minLevel = 25, entered = true },
+        { lotId = 35, kind = "free", label = "500 pièces d'or", count = 1, details = "Remis en jeu par Brindille" },
+    },
+    won = {
+        { lotId = 30, kind = "item", label = "Bottes de marche", itemId = 1234, count = 1, character = "Brindefer", drawnAt = 1799990000 },
+    },
+},
+```
+
+## Addon (0.22.10, `Tombola.lua`, `GuildUI.lua`)
+
+- Validation additive (`BridgeExport.lua`) : entrée invalide écartée seule, jamais le reste du fichier.
+- Onglet « Tombola » dans la colonne de tous : page « En cours » (streamer, date du tirage, chaîne Twitch à copier,
+  lots avec « Tu participes », « Tiré », « Tu as gagné », et « Tes gains » : « un officier t'envoie ton lot par
+  courrier » / « Envoyé ») ; les officiers gardent leur page inchangée dans l'onglet « À envoyer » de la même entrée.
+- Pastille rouge « +N » sur le bouton de la minicarte et sur l'entrée Tombola tant qu'il y a du nouveau (tombola
+  ouverte ou tirage pas encore vus, lot gagné pas encore vu) ; effacée à l'ouverture de l'onglet (vu gardé par guilde sur
+  le compte WoW : tombola + statut, lots gagnés). Un message dans le chat une fois par session (connexion ou /reload) tant qu'une
+  tombola est en cours ou qu'un lot gagné attend.
+- Données périmées (bridge qui ne synchronise plus) : une tombola dont le tirage date de plus de 24 h, ou des données
+  de plus de 14 jours (`generatedAt`), n'est plus montrée « en cours » (ni pastille ni message) ; les gains restent.
+- Les données ne changent qu'après une synchronisation du bridge jeu fermé : un tirage fait pendant la partie n'arrive
+  qu'au prochain lancement du jeu (le gagnant reste prévenu par MP Discord, comme avant).

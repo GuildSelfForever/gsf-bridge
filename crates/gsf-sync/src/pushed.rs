@@ -34,6 +34,13 @@
 //!         toSend = { { lotId = 34, kind = "item", label = "Cape", itemId = 2059, count = 1,
 //!                      location = "Guilde · onglet 2", winner = "Nom", drawnAt = 1800000000 }, ... },
 //!     },
+//!     tombolaPublic = { -- onglet Tombola ouvert à tous (contrat 2026-11-03 b), absent sans rien à dire
+//!         id = 12, status = "open", streamer = "Celetik", twitch = "celetik", drawAt = 1800000000,
+//!         lots = { { lotId = 34, kind = "item", label = "Cape", itemId = 2059, count = 1, minLevel = 25,
+//!                    drawn = true, entered = true, won = true }, ... }, -- booléens écrits seulement s'ils sont vrais
+//!         won = { { lotId = 34, kind = "item", label = "Cape", itemId = 2059, count = 1, character = "Perso",
+//!                   drawnAt = 1800000100, sent = true }, ... }, -- gains du compte de ce bridge seulement
+//!     },
 //! }
 //! ```
 //!
@@ -67,7 +74,14 @@
 //! (accusé de réception du site) : liste toujours présente, même vide, de
 //! chaînes de 1 à 128 octets faites de `[A-Za-z0-9_.:-]`,
 //! [`MAX_RECEIVED_VIOLATIONS`] au maximum ; une entrée invalide est écartée
-//! seule.
+//! seule. `tombolaPublic` (contrat 2026-11-03 b, onglet Tombola ouvert à
+//! tous) : chaque lot est écarté seul s'il est invalide (mêmes règles que les
+//! lots à envoyer, détail ≤ [`MAX_TOMBOLA_DETAILS_BYTES`], perso gagnant non
+//! vide ≤ 64 octets sans `|` ni caractère de contrôle, sinon omis),
+//! [`MAX_TOMBOLA_PUBLIC_LOTS`] lots et
+//! [`MAX_TOMBOLA_PUBLIC_WON`] gains au plus ; `twitch` gardé seulement s'il fait
+//! 1 à 25 caractères `[a-z0-9_]`, `status` seulement `open`/`drawing` ; la clé
+//! est omise s'il ne reste ni tombola en cours ni lot.
 
 use std::fs;
 use std::io;
@@ -111,6 +125,11 @@ pub const MAX_TOMBOLA_ANNOUNCE_BYTES: usize = 140;
 pub const MAX_TOMBOLA_PRIZES: usize = 50;
 pub const MAX_TOMBOLA_LABEL_BYTES: usize = 160;
 pub const MAX_TOMBOLA_LOCATION_BYTES: usize = 200;
+/// Onglet Tombola ouvert à tous (contrat 2026-11-03 b) : lots de la tombola
+/// en cours, gains du compte, détail d'un lot libre en octets.
+pub const MAX_TOMBOLA_PUBLIC_LOTS: usize = 50;
+pub const MAX_TOMBOLA_PUBLIC_WON: usize = 20;
+pub const MAX_TOMBOLA_DETAILS_BYTES: usize = 200;
 /// Bans par identité Battle.net/compte (contrat 2026-10-17) : défensif,
 /// large marge au-delà de ce que le site sert en pratique.
 pub const MAX_BANNED_IDENTITIES: usize = 500;
@@ -276,6 +295,69 @@ fn one() -> i64 {
     1
 }
 
+/// `null` → chaîne vide (le lot est ensuite écarté par la validation).
+fn null_as_empty<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
+}
+
+/// Tombola vue par chaque joueur (contrat 2026-11-03 b) : la tombola en
+/// cours et, pour le compte de ce bridge seulement, ses inscriptions et ses
+/// gains ; jamais le nom d'un autre joueur. Servie à tout bridge, membre
+/// compris.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TombolaPublic {
+    /// Tombola en cours (inscriptions ouvertes ou tirage), absente sinon.
+    #[serde(default)]
+    pub id: Option<i64>,
+    /// `open` ou `drawing`.
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub streamer: Option<String>,
+    /// Identifiant de la chaîne Twitch du streamer.
+    #[serde(default)]
+    pub twitch: Option<String>,
+    #[serde(default)]
+    pub draw_at: Option<i64>,
+    #[serde(default)]
+    pub lots: Vec<TombolaPublicLot>,
+    /// Lots gagnés par le compte de ce bridge.
+    #[serde(default)]
+    pub won: Vec<TombolaPublicLot>,
+}
+
+/// Lot de `tombolaPublic` : lot en cours (`min_level`, `drawn`, `entered`,
+/// `won`) ou lot gagné (`character`, `drawn_at`, `sent`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TombolaPublicLot {
+    pub lot_id: i64,
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Libellé absent ou `null` : lot écarté seul, jamais toute la réponse.
+    #[serde(default, deserialize_with = "null_as_empty")]
+    pub label: String,
+    #[serde(default)]
+    pub item_id: Option<i64>,
+    #[serde(default = "one")]
+    pub count: i64,
+    #[serde(default)]
+    pub details: Option<String>,
+    #[serde(default)]
+    pub min_level: Option<i64>,
+    #[serde(default)]
+    pub drawn: bool,
+    #[serde(default)]
+    pub entered: bool,
+    #[serde(default)]
+    pub won: bool,
+    #[serde(default)]
+    pub character: Option<String>,
+    #[serde(default)]
+    pub drawn_at: Option<i64>,
+    #[serde(default)]
+    pub sent: bool,
+}
+
 /// Réponse de `GET /api/v1/bridge/pushed-data`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PushedData {
@@ -339,6 +421,10 @@ pub struct PushedData {
     /// seule à l'écriture, une entrée invalide n'invalide pas le reste.
     #[serde(default)]
     pub audit_baselines: Option<Vec<serde_json::Value>>,
+    /// Onglet Tombola ouvert à tous (contrat 2026-11-03 b) ; absent sans
+    /// tombola en cours ni gain, ou sur un ancien site.
+    #[serde(default)]
+    pub tombola_public: Option<TombolaPublic>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -483,6 +569,130 @@ fn tombola_value(tombola: &Tombola, warnings: &mut Vec<String>) -> Option<LuaVal
     }
     useful |= !prizes.is_empty();
     fields.push((LuaKey::Name("toSend".into()), LuaValue::Table(prizes)));
+    useful.then_some(LuaValue::Table(fields))
+}
+
+/// Table Lua d'un lot de `tombolaPublic`, `None` s'il est invalide.
+fn tombola_public_lot(lot: &TombolaPublicLot) -> Option<LuaValue> {
+    let kind = lot.kind.as_deref().unwrap_or("item");
+    let label = clean_text(&lot.label, MAX_TOMBOLA_LABEL_BYTES)?;
+    if lot.lot_id < 1 || !(1..=1000).contains(&lot.count) || !matches!(kind, "item" | "free") {
+        return None;
+    }
+    let mut entry = vec![
+        (LuaKey::Name("lotId".into()), LuaValue::Int(lot.lot_id)),
+        (LuaKey::Name("kind".into()), LuaValue::Str(kind.to_owned())),
+        (LuaKey::Name("label".into()), LuaValue::Str(label)),
+    ];
+    if let Some(item_id) = lot.item_id.filter(|id| *id > 0) {
+        entry.push((LuaKey::Name("itemId".into()), LuaValue::Int(item_id)));
+    }
+    entry.push((LuaKey::Name("count".into()), LuaValue::Int(lot.count)));
+    if let Some(details) = lot
+        .details
+        .as_deref()
+        .and_then(|d| clean_text(d, MAX_TOMBOLA_DETAILS_BYTES))
+    {
+        entry.push((LuaKey::Name("details".into()), LuaValue::Str(details)));
+    }
+    if let Some(level) = lot.min_level.filter(|l| (1..=100).contains(l)) {
+        entry.push((LuaKey::Name("minLevel".into()), LuaValue::Int(level)));
+    }
+    if let Some(name) = lot
+        .character
+        .as_deref()
+        .and_then(|c| clean_text(c, MAX_NAME_BYTES))
+    {
+        entry.push((LuaKey::Name("character".into()), LuaValue::Str(name)));
+    }
+    if let Some(at) = lot.drawn_at.filter(|a| *a >= 0) {
+        entry.push((LuaKey::Name("drawnAt".into()), LuaValue::Int(at)));
+    }
+    for (name, flag) in [
+        ("drawn", lot.drawn),
+        ("entered", lot.entered),
+        ("won", lot.won),
+        ("sent", lot.sent),
+    ] {
+        if flag {
+            entry.push((LuaKey::Name(name.into()), LuaValue::Bool(true)));
+        }
+    }
+    Some(LuaValue::Table(entry))
+}
+
+/// Liste Lua de lots de `tombolaPublic`, bornée, lots invalides écartés seuls.
+fn tombola_public_lots(
+    lots: &[TombolaPublicLot],
+    max: usize,
+    what: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<(LuaKey, LuaValue)> {
+    let mut out = Vec::new();
+    for (idx, lot) in lots.iter().enumerate() {
+        if out.len() == max {
+            warnings.push(format!(
+                "{} {what} de tombola au-delà de {max} ignoré(s)",
+                lots.len() - idx
+            ));
+            break;
+        }
+        match tombola_public_lot(lot) {
+            Some(value) => out.push((
+                LuaKey::Index(i64::try_from(out.len() + 1).unwrap_or(i64::MAX)),
+                value,
+            )),
+            None => warnings.push(format!(
+                "{what} de tombola ignoré (valeurs invalides) : {}",
+                lot.lot_id
+            )),
+        }
+    }
+    out
+}
+
+/// Table Lua `tombolaPublic`, `None` s'il ne reste ni tombola en cours ni lot.
+fn tombola_public_value(t: &TombolaPublic, warnings: &mut Vec<String>) -> Option<LuaValue> {
+    let mut fields = Vec::new();
+    let id = t.id.filter(|id| *id > 0);
+    if let Some(id) = id {
+        fields.push((LuaKey::Name("id".into()), LuaValue::Int(id)));
+    }
+    if let Some(status) = t
+        .status
+        .as_deref()
+        .filter(|s| matches!(*s, "open" | "drawing"))
+    {
+        fields.push((
+            LuaKey::Name("status".into()),
+            LuaValue::Str(status.to_owned()),
+        ));
+    }
+    if let Some(streamer) = t
+        .streamer
+        .as_deref()
+        .and_then(|s| clean_text(s, MAX_NAME_BYTES))
+    {
+        fields.push((LuaKey::Name("streamer".into()), LuaValue::Str(streamer)));
+    }
+    if let Some(twitch) = t.twitch.as_deref().filter(|s| {
+        (1..=25).contains(&s.len())
+            && s.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    }) {
+        fields.push((
+            LuaKey::Name("twitch".into()),
+            LuaValue::Str(twitch.to_owned()),
+        ));
+    }
+    if let Some(at) = t.draw_at.filter(|a| *a >= 0) {
+        fields.push((LuaKey::Name("drawAt".into()), LuaValue::Int(at)));
+    }
+    let lots = tombola_public_lots(&t.lots, MAX_TOMBOLA_PUBLIC_LOTS, "lot", warnings);
+    let won = tombola_public_lots(&t.won, MAX_TOMBOLA_PUBLIC_WON, "gain", warnings);
+    let useful = id.is_some() || !lots.is_empty() || !won.is_empty();
+    fields.push((LuaKey::Name("lots".into()), LuaValue::Table(lots)));
+    fields.push((LuaKey::Name("won".into()), LuaValue::Table(won)));
     useful.then_some(LuaValue::Table(fields))
 }
 
@@ -1030,6 +1240,13 @@ pub fn to_addon_value(data: &PushedData) -> Result<(LuaValue, Vec<String>), Push
             LuaKey::Name("auditBaselines".into()),
             audit_baselines_value(raw, &mut warnings),
         ));
+    }
+    if let Some(public) = data
+        .tombola_public
+        .as_ref()
+        .and_then(|t| tombola_public_value(t, &mut warnings))
+    {
+        root.push((LuaKey::Name("tombolaPublic".into()), public));
     }
     Ok((LuaValue::Table(root), warnings))
 }
@@ -1935,6 +2152,165 @@ mod tests {
         );
         let sv = parse(assignment("GSF_PushedData", &v).as_bytes()).unwrap();
         assert!(sv.get("GSF_PushedData").unwrap().get("tombola").is_none());
+    }
+
+    #[test]
+    fn tombola_public_is_written_for_everyone_and_invalid_entries_filtered() {
+        let mut d = sample();
+        d.tombola_public = Some(
+            serde_json::from_str(
+                r#"{"id":12,"status":"open","streamer":"Brindille","twitch":"brindille_tv","draw_at":1800000000,
+                    "lots":[
+                      {"lot_id":34,"kind":"item","label":"Cape de factionnaire","item_id":2059,"count":1,"details":null,
+                       "min_level":25,"drawn":true,"entered":true,"won":true},
+                      {"lot_id":35,"kind":"free","label":"500 pièces d'or","item_id":null,"count":1,
+                       "details":"Remis en jeu par Brindille","min_level":null,"drawn":false,"entered":false,"won":false},
+                      {"lot_id":36,"kind":"item","label":"bad|label","count":1},
+                      {"lot_id":37,"kind":"boost","label":"Bad kind","count":1},
+                      {"lot_id":38,"kind":"item","label":null,"count":1}
+                    ],
+                    "won":[
+                      {"lot_id":34,"kind":"item","label":"Cape de factionnaire","item_id":2059,"count":1,"details":null,
+                       "character":"Brindefer","drawn_at":1800000100,"sent":false},
+                      {"lot_id":0,"kind":"item","label":"Bad id","count":1}
+                    ]}"#,
+            )
+            .unwrap(),
+        );
+        let (v, warnings) = to_addon_value(&d).unwrap();
+        assert_eq!(warnings.len(), 6, "{warnings:?}"); // 2 bans + 3 lots + 1 gain invalides
+        let sv = parse(assignment("GSF_PushedData", &v).as_bytes()).unwrap();
+        let t = sv
+            .get("GSF_PushedData")
+            .unwrap()
+            .get("tombolaPublic")
+            .unwrap();
+        assert_eq!(t.get("id"), Some(&Value::Int(12)));
+        assert_eq!(t.get("status").and_then(Value::as_str), Some("open"));
+        assert_eq!(t.get("streamer").and_then(Value::as_str), Some("Brindille"));
+        assert_eq!(
+            t.get("twitch").and_then(Value::as_str),
+            Some("brindille_tv")
+        );
+        assert_eq!(t.get("drawAt"), Some(&Value::Int(1_800_000_000)));
+        let lots: Vec<&Value> = t.get("lots").unwrap().array().collect();
+        assert_eq!(lots.len(), 2);
+        assert_eq!(lots[0].get("minLevel"), Some(&Value::Int(25)));
+        assert_eq!(lots[0].get("entered"), Some(&Value::Bool(true)));
+        assert_eq!(lots[0].get("won"), Some(&Value::Bool(true)));
+        assert_eq!(lots[1].get("entered"), None);
+        assert_eq!(lots[1].get("itemId"), None);
+        assert_eq!(
+            lots[1].get("details").and_then(Value::as_str),
+            Some("Remis en jeu par Brindille")
+        );
+        let won: Vec<&Value> = t.get("won").unwrap().array().collect();
+        assert_eq!(won.len(), 1);
+        assert_eq!(
+            won[0].get("character").and_then(Value::as_str),
+            Some("Brindefer")
+        );
+        assert_eq!(won[0].get("drawnAt"), Some(&Value::Int(1_800_000_100)));
+        assert_eq!(won[0].get("sent"), None);
+    }
+
+    #[test]
+    fn tombola_public_is_omitted_when_empty_and_bad_twitch_or_status_dropped() {
+        let (v, _) = to_addon_value(&sample()).unwrap();
+        let sv = parse(assignment("GSF_PushedData", &v).as_bytes()).unwrap();
+        assert!(sv
+            .get("GSF_PushedData")
+            .unwrap()
+            .get("tombolaPublic")
+            .is_none());
+
+        let mut d = sample();
+        d.tombola_public = Some(TombolaPublic {
+            id: None,
+            status: None,
+            streamer: None,
+            twitch: None,
+            draw_at: None,
+            lots: vec![],
+            won: vec![],
+        });
+        let (v, _) = to_addon_value(&d).unwrap();
+        let sv = parse(assignment("GSF_PushedData", &v).as_bytes()).unwrap();
+        assert!(sv
+            .get("GSF_PushedData")
+            .unwrap()
+            .get("tombolaPublic")
+            .is_none());
+
+        d.tombola_public = Some(
+            serde_json::from_str(
+                r#"{"id":3,"status":"done","streamer":"Bad|name","twitch":"https://twitch.tv/x","lots":[],"won":[]}"#,
+            )
+            .unwrap(),
+        );
+        let (v, _) = to_addon_value(&d).unwrap();
+        let sv = parse(assignment("GSF_PushedData", &v).as_bytes()).unwrap();
+        let t = sv
+            .get("GSF_PushedData")
+            .unwrap()
+            .get("tombolaPublic")
+            .unwrap();
+        assert_eq!(t.get("id"), Some(&Value::Int(3)));
+        assert!(
+            t.get("status").is_none() && t.get("streamer").is_none() && t.get("twitch").is_none()
+        );
+    }
+
+    #[test]
+    fn tombola_public_lots_and_won_are_capped() {
+        let lot = |id: i64| TombolaPublicLot {
+            lot_id: id,
+            kind: Some("item".into()),
+            label: format!("Objet {id}"),
+            item_id: Some(id),
+            count: 1,
+            details: None,
+            min_level: None,
+            drawn: false,
+            entered: false,
+            won: false,
+            character: None,
+            drawn_at: None,
+            sent: false,
+        };
+        let mut d = sample();
+        d.tombola_public = Some(TombolaPublic {
+            id: Some(1),
+            status: Some("open".into()),
+            streamer: None,
+            twitch: None,
+            draw_at: None,
+            lots: (1..=60).map(lot).collect(),
+            won: (1..=25).map(lot).collect(),
+        });
+        let (v, warnings) = to_addon_value(&d).unwrap();
+        assert!(
+            warnings.iter().any(|w| w.contains("10 lot")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("5 gain")),
+            "{warnings:?}"
+        );
+        let sv = parse(assignment("GSF_PushedData", &v).as_bytes()).unwrap();
+        let t = sv
+            .get("GSF_PushedData")
+            .unwrap()
+            .get("tombolaPublic")
+            .unwrap();
+        assert_eq!(
+            t.get("lots").unwrap().array().count(),
+            MAX_TOMBOLA_PUBLIC_LOTS
+        );
+        assert_eq!(
+            t.get("won").unwrap().array().count(),
+            MAX_TOMBOLA_PUBLIC_WON
+        );
     }
 
     #[test]
