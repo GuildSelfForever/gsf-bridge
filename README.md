@@ -53,7 +53,9 @@ Liste exacte, tirée du code (les chemins entre parenthèses renvoient au fichie
   et `Data.lua`, avec ce que le site envoie : liste des bannis, guildes alliées, réglage des demandes, tombola en
   cours du streamer (lots, et pour ton compte seulement : tes inscriptions et tes gains) et, pour un
   officier ou un collecteur, empreintes d'identité des personnes bannies, liste noire, nom et mot de passe du canal
-  de la fédération, tombola, joueurs blanchis, preuves signées par le site que ses persos sont collecteurs. Il y
+  de la fédération, tombola, joueurs blanchis, preuves signées par le site que ses persos sont collecteurs,
+  anciens membres autorisés à revenir par « gsf » (nom, empreintes d'identité, motif, date du départ) et retours
+  validés par un officier. Il y
   écrit aussi la liste des triches déjà bien reçues par le site (pour un membre : seulement celles de ses persos),
   pour que l'addon sache qu'il peut arrêter de les renvoyer. Si tu as coché « Synchroniser mon addon entre mes
   ordinateurs », il y écrit aussi la dernière photo de tes persos prise sur tes autres ordinateurs (voir plus bas).

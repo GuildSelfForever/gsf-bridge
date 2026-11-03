@@ -943,3 +943,61 @@ et ne classent personne. Tous les autres rapports gardent exactement l'ancien fo
   de crédit (temps avant le chargement de l'addon, écrans de chargement).
 - Pas de signal : référence sans `/played` (premier passage après la mise à jour), pas de `TIME_PLAYED_MSG`,
   nouvelle inscription, `/played` plus bas qu'attendu (noté « incohérent » dans `/gsf auditstatus`).
+
+---
+
+# Ajout 2026-11-04 (b) : retours d'inactifs (site, bridge 0.7.4, addon 0.22.12)
+
+Un ancien membre exclu pour inactivité (ou parti pendant une absence déclarée) revient en chuchotant « gsf » à un
+recruteur, **sans** la règle du niveau 1, et arrive avec le statut « Retour à vérifier » jusqu'au feu vert d'un
+officier sur le site. Jamais membre automatiquement ; un signal est un cas à examiner, jamais Tricheur automatique ;
+un banni (ban de perso, ban de la personne, liste noire) n'est jamais réinvité. Tout est additif : un ancien bridge
+ignore la clé, un ancien addon aussi (il garde la règle du niveau 1), `schema` inchangé.
+
+## Données poussées : `returns` (collecteurs seulement)
+
+Présente pour tout bridge collecteur, jamais pour un membre simple ; incluse dans le hash `version`.
+
+```json
+"returns": {
+  "allowed": [
+    { "name": "Nom Prénom", "bt": "<32 hex>", "acct": "<16 hex>", "reason": "inactivity", "since": 1800000000 }
+  ],
+  "validated": [ { "name": "Nom Prénom", "at": 1800100000 } ]
+}
+```
+
+- `allowed` (500 au plus) : persos de la guilde demandée qui peuvent revenir par « gsf » : hors guilde (ni retraité,
+  ni signalé), exclus au motif `inactivity` ou partis pendant une absence déclarée (`absence`), sans ban actif ni
+  identité bannie ni entrée de liste noire, avec une identité connue (`bt` et/ou `acct`, chacun omis si inconnu).
+  `since` = heure du départ.
+- `validated` (500 au plus) : retours validés par un officier (ou cas « à examiner » classé sans suite) dans les
+  30 derniers jours ; `at` = heure de la décision. L'addon d'un officier repasse alors « Retour à vérifier » à
+  inscrit si `flaggedAt <= at`.
+
+## Bridge (0.7.4) : `returns`
+
+Chaque entrée validée seule, jamais tout le fichier : nom (règles des bans), `bt` gardé seulement s'il fait exactement
+32 caractères `[0-9a-f]`, `acct` 16, entrée `allowed` écartée s'il ne reste aucun des deux ; `reason` gardée seulement
+si `inactivity` ou `absence` ; `since` négatif omis ; entrée `validated` écartée si `at` est négatif ; 500 au plus par
+liste. Clé écrite seulement si le site l'envoie :
+
+```lua
+returns = {
+    allowed = { { name = "Nom Prénom", bt = "…", acct = "…", reason = "inactivity", since = 1800000000 }, … },
+    validated = { { name = "Nom Prénom", at = 1800100000 }, … },
+},
+```
+
+## Addon (0.22.12)
+
+- Recruteur avec la liste : « gsf » chuchoté par un perso de `allowed` → mêmes refus qu'avant (retraité, banni,
+  identité bannie, liste noire), pas de contrôle niveau 1 / 0 XP / 0 cuivre / sacs de départ, mais l'identité
+  déclarée par l'addon du candidat (`INVID`) doit correspondre à l'entrée (`bt`, ou `acct` si l'entrée n'a pas de
+  `bt`). Un autre perso de la même personne n'est pas accepté par ce chemin.
+- Arrivée en `TO_VERIFY` avec `flagSource = "return"` (« Retour à vérifier » : échanges et courrier bloqués), envoyé
+  au site par le roster d'aventure du snapshot, sans changement du modèle.
+- L'audit du perso compare à sa dernière référence d'avant le départ ; le temps joué sans l'addon reste un cas à
+  examiner.
+- Limite : l'identité est déclarée par l'addon du candidat (falsifiable par un addon modifié qui connaîtrait le
+  BattleTag de l'ancien joueur) ; le nom du chuchoteur est garanti par le serveur, il faut donc aussi tenir le perso.

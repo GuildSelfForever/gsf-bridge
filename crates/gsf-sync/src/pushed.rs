@@ -42,6 +42,10 @@
 //!         won = { { lotId = 34, kind = "item", label = "Cape", itemId = 2059, count = 1, character = "Perso",
 //!                   drawnAt = 1800000100, sent = true }, ... }, -- gains du compte de ce bridge seulement
 //!     },
+//!     returns = { -- retours d'inactifs (contrat 2026-11-04 b), collecteurs seulement, absent sur un ancien site
+//!         allowed = { { name = "Nom", bt = "32 hex", acct = "16 hex", reason = "inactivity", since = 1800000000 }, ... },
+//!         validated = { { name = "Nom", at = 1800100000 }, ... },
+//!     },
 //! }
 //! ```
 //!
@@ -82,7 +86,13 @@
 //! [`MAX_TOMBOLA_PUBLIC_LOTS`] lots et
 //! [`MAX_TOMBOLA_PUBLIC_WON`] gains au plus ; `twitch` gardé seulement s'il fait
 //! 1 à 25 caractères `[a-z0-9_]`, `status` seulement `open`/`drawing` ; la clé
-//! est omise s'il ne reste ni tombola en cours ni lot.
+//! est omise s'il ne reste ni tombola en cours ni lot. `returns` (contrat
+//! 2026-11-04 b, retours d'inactifs) : écrite seulement si le site l'envoie ;
+//! chaque entrée est validée seule (nom : règles des bans ; `bt`/`acct` gardés
+//! seulement s'ils font exactement 32/16 caractères hexadécimaux minuscules,
+//! entrée `allowed` écartée s'il ne reste aucun des deux ; `reason` gardée
+//! seulement si `inactivity`/`absence` ; `since` négatif omis ; entrée
+//! `validated` écartée si `at` est négatif), [`MAX_RETURNS`] au plus par liste.
 
 use std::fs;
 use std::io;
@@ -144,6 +154,9 @@ pub const PROOF_SIG_HEX_LEN: usize = 512;
 pub const MAX_RECEIVED_VIOLATIONS: usize = 2000;
 /// Identifiant de violation, en octets.
 pub const MAX_VIOLATION_ID_BYTES: usize = 128;
+/// Retours d'inactifs (contrat 2026-11-04 b) : au plus par liste
+/// (`allowed`, `validated`), comme le site.
+pub const MAX_RETURNS: usize = 500;
 
 /// Ban tel que servi par le backend (contrat, décision 12) :
 /// `{"name","reason"?,"expiresAt"?}`.
@@ -254,6 +267,65 @@ pub struct CollectorProof {
 pub struct Cleared {
     pub name: String,
     pub at: i64,
+}
+
+/// Perso qui peut revenir par « gsf » sans la règle du niveau 1 (contrat
+/// 2026-11-04 b) : exclu pour inactivité ou parti pendant une absence
+/// déclarée, ni banni ni signalé. `bt`/`acct` : empreinte d'identité connue
+/// du site (au moins une des deux pour être gardé).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReturnAllowed {
+    pub name: String,
+    #[serde(default)]
+    pub bt: Option<String>,
+    #[serde(default)]
+    pub acct: Option<String>,
+    /// `inactivity` ou `absence` (autre valeur omise).
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Heure du départ (epoch).
+    #[serde(default)]
+    pub since: Option<i64>,
+}
+
+/// Retour validé par un officier (contrat 2026-11-04 b) : l'addon repasse
+/// « Retour à vérifier » à inscrit si `flaggedAt <= at`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReturnValidated {
+    pub name: String,
+    pub at: i64,
+}
+
+/// Retours d'inactifs (contrat 2026-11-04 b), servis aux collecteurs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Returns {
+    #[serde(default)]
+    pub allowed: Vec<ReturnAllowed>,
+    #[serde(default)]
+    pub validated: Vec<ReturnValidated>,
+}
+
+/// `returns` tolérant : un objet est gardé avec ses seules entrées bien
+/// typées (les autres écartées une par une) ; toute autre forme (nombre,
+/// chaîne, liste…) donne `None`, comme un ancien site. `null` donne `None`.
+fn lenient_returns<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Returns>, D::Error> {
+    let raw = Option::<serde_json::Value>::deserialize(d)?;
+    let Some(serde_json::Value::Object(map)) = raw else {
+        return Ok(None);
+    };
+    fn entries<T: serde::de::DeserializeOwned>(v: Option<&serde_json::Value>) -> Vec<T> {
+        v.and_then(serde_json::Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(|e| serde_json::from_value(e.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    Ok(Some(Returns {
+        allowed: entries(map.get("allowed")),
+        validated: entries(map.get("validated")),
+    }))
 }
 
 /// Tombola du streamer (contrat 2026-10-16).
@@ -426,6 +498,12 @@ pub struct PushedData {
     /// tombola en cours ni gain, ou sur un ancien site.
     #[serde(default)]
     pub tombola_public: Option<TombolaPublic>,
+    /// Retours d'inactifs (contrat 2026-11-04 b) ; absent pour un membre
+    /// simple ou sur un ancien site, alors non écrit. Lu entrée par entrée
+    /// ([`lenient_returns`]) : une entrée mal typée est écartée seule, jamais
+    /// toute la réponse (bans, identités bannies… restent écrits).
+    #[serde(default, deserialize_with = "lenient_returns")]
+    pub returns: Option<Returns>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1264,7 +1342,109 @@ pub fn to_addon_value(data: &PushedData) -> Result<(LuaValue, Vec<String>), Push
     {
         root.push((LuaKey::Name("tombolaPublic".into()), public));
     }
+    if let Some(returns) = &data.returns {
+        root.push((
+            LuaKey::Name("returns".into()),
+            returns_value(returns, &mut warnings),
+        ));
+    }
     Ok((LuaValue::Table(root), warnings))
+}
+
+/// Nom d'un perso venant du site : règles des bans (non vide, ≤ 64 octets,
+/// sans caractère de contrôle ni `|`), rogné.
+fn clean_name(raw: &str) -> Option<&str> {
+    let name = raw.trim();
+    (!name.is_empty()
+        && name.len() <= MAX_NAME_BYTES
+        && !name.chars().any(|ch| ch.is_control() || ch == '|'))
+    .then_some(name)
+}
+
+fn index_key(len: usize) -> LuaKey {
+    LuaKey::Index(i64::try_from(len + 1).unwrap_or(i64::MAX))
+}
+
+/// Table Lua `returns` (contrat 2026-11-04 b) : chaque entrée validée seule.
+fn returns_value(r: &Returns, warnings: &mut Vec<String>) -> LuaValue {
+    let mut allowed = Vec::new();
+    for (idx, e) in r.allowed.iter().enumerate() {
+        if allowed.len() == MAX_RETURNS {
+            warnings.push(format!(
+                "{} retour(s) autorisé(s) au-delà de {MAX_RETURNS} ignoré(s)",
+                r.allowed.len() - idx
+            ));
+            break;
+        }
+        let Some(name) = clean_name(&e.name) else {
+            warnings.push(format!(
+                "retour autorisé ignoré (nom invalide) : {:?}",
+                e.name
+            ));
+            continue;
+        };
+        let bt = e.bt.as_deref().filter(|v| is_hex_id(v, 32));
+        let acct = e.acct.as_deref().filter(|v| is_hex_id(v, 16));
+        if bt.is_none() && acct.is_none() {
+            warnings.push(format!(
+                "retour autorisé ignoré (identité invalide) : {name:?}"
+            ));
+            continue;
+        }
+        let mut entry = vec![(LuaKey::Name("name".into()), LuaValue::Str(name.to_owned()))];
+        if let Some(bt) = bt {
+            entry.push((LuaKey::Name("bt".into()), LuaValue::Str(bt.to_owned())));
+        }
+        if let Some(acct) = acct {
+            entry.push((LuaKey::Name("acct".into()), LuaValue::Str(acct.to_owned())));
+        }
+        if let Some(reason) = e
+            .reason
+            .as_deref()
+            .filter(|v| *v == "inactivity" || *v == "absence")
+        {
+            entry.push((
+                LuaKey::Name("reason".into()),
+                LuaValue::Str(reason.to_owned()),
+            ));
+        }
+        if let Some(since) = e.since.filter(|v| *v >= 0) {
+            entry.push((LuaKey::Name("since".into()), LuaValue::Int(since)));
+        }
+        allowed.push((index_key(allowed.len()), LuaValue::Table(entry)));
+    }
+    let mut validated = Vec::new();
+    for (idx, e) in r.validated.iter().enumerate() {
+        if validated.len() == MAX_RETURNS {
+            warnings.push(format!(
+                "{} retour(s) validé(s) au-delà de {MAX_RETURNS} ignoré(s)",
+                r.validated.len() - idx
+            ));
+            break;
+        }
+        let Some(name) = clean_name(&e.name) else {
+            warnings.push(format!(
+                "retour validé ignoré (nom invalide) : {:?}",
+                e.name
+            ));
+            continue;
+        };
+        if e.at < 0 {
+            warnings.push(format!("retour validé ignoré (date invalide) : {}", e.at));
+            continue;
+        }
+        validated.push((
+            index_key(validated.len()),
+            LuaValue::Table(vec![
+                (LuaKey::Name("name".into()), LuaValue::Str(name.to_owned())),
+                (LuaKey::Name("at".into()), LuaValue::Int(e.at)),
+            ]),
+        ));
+    }
+    LuaValue::Table(vec![
+        (LuaKey::Name("allowed".into()), LuaValue::Table(allowed)),
+        (LuaKey::Name("validated".into()), LuaValue::Table(validated)),
+    ])
 }
 
 fn sanitize_version(version: Option<&str>) -> String {
@@ -2586,6 +2766,191 @@ mod tests {
                 at: 1_700_000_000,
             }]
         );
+    }
+
+    fn returns_table(d: &PushedData) -> (Option<Value>, Vec<String>) {
+        let (v, warnings) = to_addon_value(d).unwrap();
+        let src = assignment("GSF_PushedData", &v);
+        let sv = parse(src.as_bytes()).unwrap();
+        (
+            sv.get("GSF_PushedData").unwrap().get("returns").cloned(),
+            warnings,
+        )
+    }
+
+    #[test]
+    fn malformed_returns_never_drop_the_rest_of_the_pushed_data() {
+        let json = r#"{"schema":1,"guild_key":"realm#home","bans":[{"name":"Cheater"}],
+            "returns":{"allowed":[{"name":null},{"name":"Ann Bee","bt":123},{"name":"Bob","acct":"0123456789abcdef","since":"x"},
+                {"name":"Cid","acct":"0123456789abcdef"}],
+              "validated":[{"name":"Ann Bee","at":null},{"name":"Cid","at":5}]}}"#;
+        let d: PushedData = serde_json::from_str(json).unwrap();
+        assert_eq!(d.bans.len(), 1);
+        let r = d.returns.unwrap();
+        assert_eq!(r.allowed.len(), 1);
+        assert_eq!(r.allowed[0].name, "Cid");
+        assert_eq!(r.validated.len(), 1);
+        assert_eq!(r.validated[0].at, 5);
+        for bad in [r#""x""#, "12", "[]", "null"] {
+            let json = format!(
+                r#"{{"schema":1,"guild_key":"realm#home","bans":[{{"name":"Cheater"}}],"returns":{bad}}}"#
+            );
+            let d: PushedData = serde_json::from_str(&json).unwrap();
+            assert!(d.returns.is_none() && d.bans.len() == 1, "{bad}");
+        }
+    }
+
+    #[test]
+    fn returns_absent_when_the_site_does_not_send_them() {
+        let (r, _) = returns_table(&sample());
+        assert!(r.is_none());
+        let mut d = sample();
+        d.returns = Some(Returns::default());
+        let (r, _) = returns_table(&d);
+        let r = r.unwrap();
+        assert_eq!(r.get("allowed").unwrap().as_table().unwrap().len(), 0);
+        assert_eq!(r.get("validated").unwrap().as_table().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn returns_are_written_and_invalid_entries_filtered() {
+        let bt = "a".repeat(32);
+        let acct = "0123456789abcdef".to_owned();
+        let mut d = sample();
+        d.returns = Some(Returns {
+            allowed: vec![
+                ReturnAllowed {
+                    name: " Ann Bee ".into(),
+                    bt: Some(bt.clone()),
+                    acct: Some(acct.clone()),
+                    reason: Some("inactivity".into()),
+                    since: Some(1_800_000_000),
+                },
+                // bt invalide mais acct valide : gardée, sans bt ; motif inconnu et date négative omis.
+                ReturnAllowed {
+                    name: "Bob".into(),
+                    bt: Some("A".repeat(32)),
+                    acct: Some(acct.clone()),
+                    reason: Some("kick".into()),
+                    since: Some(-1),
+                },
+                // aucune identité valide : écartée.
+                ReturnAllowed {
+                    name: "Carl".into(),
+                    bt: Some("abc".into()),
+                    acct: None,
+                    reason: Some("absence".into()),
+                    since: None,
+                },
+                ReturnAllowed {
+                    name: "bad|name".into(),
+                    bt: Some(bt.clone()),
+                    acct: None,
+                    reason: None,
+                    since: None,
+                },
+            ],
+            validated: vec![
+                ReturnValidated {
+                    name: "Ann Bee".into(),
+                    at: 1_800_100_000,
+                },
+                ReturnValidated {
+                    name: "Bob".into(),
+                    at: -5,
+                },
+                ReturnValidated {
+                    name: "  ".into(),
+                    at: 1,
+                },
+            ],
+        });
+        let (r, warnings) = returns_table(&d);
+        let r = r.unwrap();
+        let allowed: Vec<&Value> = r.get("allowed").unwrap().array().collect();
+        assert_eq!(allowed.len(), 2);
+        assert_eq!(
+            allowed[0].get("name").and_then(Value::as_str),
+            Some("Ann Bee")
+        );
+        assert_eq!(
+            allowed[0].get("bt").and_then(Value::as_str),
+            Some(bt.as_str())
+        );
+        assert_eq!(
+            allowed[0].get("acct").and_then(Value::as_str),
+            Some(acct.as_str())
+        );
+        assert_eq!(
+            allowed[0].get("reason").and_then(Value::as_str),
+            Some("inactivity")
+        );
+        assert_eq!(allowed[0].get("since"), Some(&Value::Int(1_800_000_000)));
+        assert_eq!(allowed[1].get("name").and_then(Value::as_str), Some("Bob"));
+        assert!(allowed[1].get("bt").is_none());
+        assert!(allowed[1].get("reason").is_none());
+        assert!(allowed[1].get("since").is_none());
+        let validated: Vec<&Value> = r.get("validated").unwrap().array().collect();
+        assert_eq!(validated.len(), 1);
+        assert_eq!(
+            validated[0].get("name").and_then(Value::as_str),
+            Some("Ann Bee")
+        );
+        assert_eq!(validated[0].get("at"), Some(&Value::Int(1_800_100_000)));
+        assert!(warnings.iter().any(|w| w.contains("identité invalide")));
+        assert!(warnings.iter().any(|w| w.contains("retour validé ignoré")));
+    }
+
+    #[test]
+    fn returns_lists_are_capped() {
+        let mut r = Returns::default();
+        for i in 0..(MAX_RETURNS + 3) {
+            r.allowed.push(ReturnAllowed {
+                name: format!("Joueur{i}"),
+                bt: None,
+                acct: Some("0123456789abcdef".into()),
+                reason: None,
+                since: None,
+            });
+            r.validated.push(ReturnValidated {
+                name: format!("Joueur{i}"),
+                at: 1,
+            });
+        }
+        let mut d = sample();
+        d.returns = Some(r);
+        let (r, warnings) = returns_table(&d);
+        let r = r.unwrap();
+        assert_eq!(
+            r.get("allowed").unwrap().as_table().unwrap().len(),
+            MAX_RETURNS
+        );
+        assert_eq!(
+            r.get("validated").unwrap().as_table().unwrap().len(),
+            MAX_RETURNS
+        );
+        assert!(warnings.iter().any(|w| w.contains("retour(s) autorisé(s)")));
+        assert!(warnings.iter().any(|w| w.contains("retour(s) validé(s)")));
+    }
+
+    #[test]
+    fn returns_json_field_names_match_the_contract() {
+        let d: PushedData = serde_json::from_str(
+            r#"{"schema":1,"guild_key":"realm#home",
+                "returns":{"allowed":[{"name":"Ann Bee","bt":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "acct":"0123456789abcdef","reason":"absence","since":1800000000}],
+                  "validated":[{"name":"Ann Bee","at":1800100000}]}}"#,
+        )
+        .unwrap();
+        let r = d.returns.unwrap();
+        assert_eq!(r.allowed[0].reason.as_deref(), Some("absence"));
+        assert_eq!(r.allowed[0].since, Some(1_800_000_000));
+        assert_eq!(r.allowed[0].acct.as_deref(), Some("0123456789abcdef"));
+        assert_eq!(r.validated[0].at, 1_800_100_000);
+        // Liste manquante : vide, jamais une erreur.
+        let d: PushedData =
+            serde_json::from_str(r#"{"schema":1,"guild_key":"realm#home","returns":{}}"#).unwrap();
+        assert_eq!(d.returns, Some(Returns::default()));
     }
 
     #[test]
