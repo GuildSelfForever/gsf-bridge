@@ -10,11 +10,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use gsf_core::model::baseline::MAX_BASELINES;
+use gsf_core::model::AuditBaseline;
 use serde::Serialize;
 use uuid::Uuid;
 
 use crate::api::{ApiClient, ApiError, DeviceRegistration, SnapshotResponse, DEFAULT_BASE_URL};
 use crate::auth::{self, DeviceSecretStore, TokenStore};
+use crate::canonical::sha256_hex;
 use crate::fsutil::{now_secs, read_json, write_json};
 use crate::headline::{headline, Headline};
 use crate::pushed::{
@@ -144,6 +147,9 @@ pub struct Status {
     pub last_send: Option<SendRecord>,
     pub queue: QueueInfo,
     pub pushed: PushedInfo,
+    /// Case « Synchroniser mon addon entre mes ordinateurs » (contrat
+    /// 2026-11-03), décochée par défaut.
+    pub audit_sync: bool,
     /// Du plus récent au plus ancien.
     pub log: Vec<LogEntry>,
     /// Phrase d'état principale, en mots simples.
@@ -185,6 +191,9 @@ struct Inner {
     /// État du jeu annoncé au dernier signal de vie réussi (`None` = aucun
     /// encore) : un changement déclenche un signal sans attendre 5 minutes.
     last_heartbeat_game: Option<bool>,
+    /// Photos d'audit pas encore acceptées par le site (réseau, pas de jeton) :
+    /// renvoyées par la tâche d'une minute.
+    pending_baselines: Option<Vec<AuditBaseline>>,
 }
 
 impl Inner {
@@ -344,6 +353,7 @@ impl Engine {
             pushed_waiting: false,
             site_unreachable: false,
             last_heartbeat_game: None,
+            pending_baselines: None,
         };
         for (level, msg) in startup_log {
             inner.push_log(level, msg);
@@ -535,6 +545,7 @@ impl Engine {
                 written_at: inner.state.pushed_written_at,
                 waiting_game_closed: inner.pending_pushed.is_some() && inner.pushed_waiting,
             },
+            audit_sync: inner.config.audit_sync,
             log: inner.log.iter().rev().cloned().collect(),
             headline: Headline::default(),
         };
@@ -855,6 +866,7 @@ impl Engine {
         .await
         .unwrap_or_else(|e| vec![Err(format!("lecture interrompue : {e}"))]);
 
+        let mut baselines: Vec<AuditBaseline> = Vec::new();
         for item in built {
             let mut b = match item {
                 Ok(b) => b,
@@ -864,6 +876,7 @@ impl Engine {
                     continue;
                 }
             };
+            baselines.append(&mut b.baselines);
             // Membre simple (contrat 2026-11-02 b) : seulement les preuves de
             // triche ; le hash suit le contenu filtré.
             if self.lock().state.is_plain_member() {
@@ -902,6 +915,9 @@ impl Engine {
                 SendOutcome::Queued => report.queued += 1,
                 SendOutcome::Failed => report.errors += 1,
             }
+        }
+        if self.lock().config.audit_sync {
+            self.send_audit_baselines(merge_baselines(baselines)).await;
         }
         report
     }
@@ -1106,7 +1122,7 @@ impl Engine {
             return None;
         }
         let token = self.token()?;
-        let (active_guild_key, known) = {
+        let (active_guild_key, known, audit_sync) = {
             let inner = self.lock();
             // « Seulement si changé » (contrat 2026-11-02 b) : seulement si la
             // version écrite est connue, que rien n'attend la fermeture du jeu
@@ -1117,12 +1133,21 @@ impl Engine {
                 .pushed_version
                 .clone()
                 .filter(|_| inner.pending_pushed.is_none());
-            (inner.state.active_guild_key.clone(), known)
+            (
+                inner.state.active_guild_key.clone(),
+                known,
+                inner.config.audit_sync,
+            )
         };
         let known = known.filter(|_| data_files_present(&addon_targets(&self.flavor_dirs())));
         match self
             .api()
-            .pushed_data_if_changed(&token, active_guild_key.as_deref(), known.as_deref())
+            .pushed_data_request(
+                &token,
+                active_guild_key.as_deref(),
+                known.as_deref(),
+                audit_sync,
+            )
             .await
         {
             Ok(None) => {
@@ -1279,12 +1304,214 @@ impl Engine {
         }
     }
 
+    // --- Plusieurs ordinateurs (contrat 2026-11-03) ---------------------------
+
+    /// Coche ou décoche « Synchroniser mon addon entre mes ordinateurs ».
+    /// Cochée : les photos seront toutes renvoyées au prochain envoi.
+    /// Décochée : le site devra oublier les photos du compte (redemandé
+    /// jusqu'à sa réponse) et ce PC n'en reçoit plus. Appeler ensuite
+    /// [`Engine::audit_sync_changed`].
+    pub fn set_audit_sync(&self, enabled: bool) -> Result<(), String> {
+        {
+            let mut inner = self.lock();
+            if inner.config.audit_sync == enabled {
+                return Ok(());
+            }
+            inner.config.audit_sync = enabled;
+            if let Err(e) = write_json(&self.paths.config(), &inner.config) {
+                inner.config.audit_sync = !enabled;
+                return Err(format!("Sauvegarde des réglages impossible : {e}"));
+            }
+            inner.state.audit_baselines_hash = None;
+            inner.state.audit_forget_pending = !enabled;
+            inner.pending_baselines = None;
+            Self::save_state(&mut inner, &self.paths);
+            inner.push_log(
+                Level::Info,
+                if enabled {
+                    "Synchronisation entre tes ordinateurs activée".to_owned()
+                } else {
+                    "Synchronisation entre tes ordinateurs coupée : le site va oublier tes inventaires"
+                        .to_owned()
+                },
+            );
+        }
+        self.notify();
+        Ok(())
+    }
+
+    /// Suite d'un changement de la case : fait oublier les photos au site
+    /// (décochée) ou envoie celles de ce PC (cochée), puis relit les données
+    /// poussées (avec ou sans les photos des autres PC).
+    pub async fn audit_sync_changed(&self) {
+        self.forget_audit_baselines_if_pending().await;
+        if self.lock().config.audit_sync {
+            self.sync_all("synchronisation entre ordinateurs").await;
+        }
+        self.refresh_pushed_data().await;
+    }
+
+    /// Envoie les photos d'audit si elles ont changé depuis le dernier envoi
+    /// accepté ; gardées pour un nouvel essai si le site est injoignable.
+    async fn send_audit_baselines(&self, list: Vec<AuditBaseline>) {
+        if list.is_empty() {
+            return;
+        }
+        let hash = sha256_hex(&serde_json::to_vec(&list).unwrap_or_default());
+        {
+            let mut inner = self.lock();
+            if !inner.config.audit_sync
+                || inner.state.audit_baselines_hash.as_deref() == Some(hash.as_str())
+            {
+                inner.pending_baselines = None;
+                return;
+            }
+            inner.pending_baselines = Some(list.clone());
+        }
+        if self.update_required().is_some() {
+            return;
+        }
+        let Some(token) = self.token() else { return };
+        match self.api().post_audit_baselines(&token, &list).await {
+            Ok(resp) => {
+                self.set_site_unreachable(false);
+                {
+                    let mut inner = self.lock();
+                    inner.pending_baselines = None;
+                    inner.state.audit_baselines_hash = Some(hash);
+                    Self::save_state(&mut inner, &self.paths);
+                    inner.push_log(
+                        Level::Info,
+                        format!(
+                            "Inventaire de {} perso(s) partagé avec tes autres ordinateurs",
+                            list.len() - resp.ignored.len().min(list.len())
+                        ),
+                    );
+                    let not_linked: Vec<&str> = resp
+                        .ignored
+                        .iter()
+                        .filter(|i| i.reason == "not_linked")
+                        .map(|i| i.name.as_str())
+                        .collect();
+                    if !not_linked.is_empty() {
+                        inner.push_log(
+                            Level::Warn,
+                            format!(
+                                "Persos pas liés à ton compte, non partagés : {} (lie-les en jeu avec /gsf link)",
+                                not_linked.join(", ")
+                            ),
+                        );
+                    }
+                }
+                self.notify();
+            }
+            Err(ApiError::Http { status: 409, .. }) => {
+                {
+                    let mut inner = self.lock();
+                    inner.pending_baselines = None;
+                    inner.state.audit_baselines_hash = Some(hash);
+                    Self::save_state(&mut inner, &self.paths);
+                    inner.push_log(
+                        Level::Warn,
+                        "Synchronisation entre ordinateurs : connecte le bridge avec Discord pour l'utiliser"
+                            .to_owned(),
+                    );
+                }
+                self.notify();
+            }
+            Err(e) => {
+                if e.is_retriable() {
+                    self.set_site_unreachable(true);
+                } else if !matches!(e, ApiError::AuthRequired { .. } | ApiError::Outdated { .. }) {
+                    // Refus définitif : réessayé seulement au prochain changement.
+                    self.lock().pending_baselines = None;
+                }
+                if !self.handle_api_error(&e) {
+                    self.log(Level::Warn, format!("Partage de l'inventaire : {e}"));
+                }
+            }
+        }
+    }
+
+    /// Renvoie les photos restées en attente (appelé chaque minute).
+    async fn retry_audit_baselines(&self) {
+        let pending = self.lock().pending_baselines.clone();
+        if let Some(list) = pending {
+            self.send_audit_baselines(list).await;
+        }
+    }
+
+    /// Case décochée : demande au site d'oublier les photos du compte, jusqu'à
+    /// ce qu'il réponde (appelé aussi chaque minute).
+    async fn forget_audit_baselines_if_pending(&self) {
+        if !self.lock().state.audit_forget_pending || self.update_required().is_some() {
+            return;
+        }
+        let Some(token) = self.token() else { return };
+        match self.api().forget_audit_baselines(&token).await {
+            Ok(()) | Err(ApiError::Http { status: 409, .. }) => {
+                self.set_site_unreachable(false);
+                {
+                    let mut inner = self.lock();
+                    inner.state.audit_forget_pending = false;
+                    Self::save_state(&mut inner, &self.paths);
+                    inner.push_log(
+                        Level::Info,
+                        "Le site a oublié les inventaires partagés de ton compte".to_owned(),
+                    );
+                }
+                self.notify();
+            }
+            Err(e) => {
+                if e.is_retriable() {
+                    self.set_site_unreachable(true);
+                } else if !matches!(e, ApiError::AuthRequired { .. } | ApiError::Outdated { .. }) {
+                    let mut inner = self.lock();
+                    inner.state.audit_forget_pending = false;
+                    Self::save_state(&mut inner, &self.paths);
+                }
+                if !self.handle_api_error(&e) {
+                    self.log(Level::Warn, format!("Oubli des inventaires partagés : {e}"));
+                }
+            }
+        }
+    }
+
     /// Tâche périodique : vide la file d'attente, écrit les données
     /// poussées en attente si le jeu a été fermé, et prévient le site si le
-    /// jeu vient d'être ouvert ou fermé.
+    /// jeu vient d'être ouvert ou fermé. Case « plusieurs ordinateurs »
+    /// cochée : relit aussi les données poussées jeu fermé (un `304` ne coûte
+    /// presque rien), pour qu'un perso joué sur un autre PC arrive ici en une
+    /// minute environ, avant le lancement du jeu.
     pub async fn tick(&self) {
         self.flush_queue().await;
         self.write_pending_pushed();
         self.heartbeat_if_game_changed().await;
+        self.forget_audit_baselines_if_pending().await;
+        self.retry_audit_baselines().await;
+        if self.lock().config.audit_sync && !self.detector.is_game_running() {
+            self.refresh_pushed_data().await;
+        }
     }
+}
+
+/// Photos de tous les comptes WoW du PC : la plus récente par perso,
+/// [`MAX_BASELINES`] au plus (les plus récentes), triées par perso.
+fn merge_baselines(list: Vec<AuditBaseline>) -> Vec<AuditBaseline> {
+    let mut best: std::collections::BTreeMap<String, AuditBaseline> = Default::default();
+    for b in list {
+        if best
+            .get(&b.name)
+            .map_or(true, |old| old.saved_at < b.saved_at)
+        {
+            best.insert(b.name.clone(), b);
+        }
+    }
+    let mut out: Vec<AuditBaseline> = best.into_values().collect();
+    if out.len() > MAX_BASELINES {
+        out.sort_by(|a, b| b.saved_at.cmp(&a.saved_at).then(a.name.cmp(&b.name)));
+        out.truncate(MAX_BASELINES);
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+    out
 }

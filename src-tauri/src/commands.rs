@@ -87,3 +87,13 @@ pub fn reset_wow_dir(state: State<'_, AppState>) -> Result<(), String> {
 pub fn set_base_url(state: State<'_, AppState>, url: Option<String>) -> Result<(), String> {
     state.engine.set_base_url(url)
 }
+
+/// Case « Synchroniser mon addon entre mes ordinateurs » (contrat
+/// 2026-11-03) : enregistrée tout de suite, puis envoi ou oubli des
+/// inventaires et relecture des données poussées en arrière-plan.
+#[tauri::command]
+pub fn set_audit_sync(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    state.engine.set_audit_sync(enabled)?;
+    state.trigger(Trigger::AuditSyncChanged);
+    Ok(())
+}

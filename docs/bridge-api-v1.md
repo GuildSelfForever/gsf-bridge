@@ -665,3 +665,117 @@ plus, entrée sans nom écartée.
   joueurs ont reçu en jeu des signalements qui ne sont jamais arrivés par leur bridge » (remises de plus de 3 jours,
   seulement pour des persos de collecteurs connus). Signal à vérifier, jamais une preuve : l'historique vient du joueur
   qui a envoyé le signalement.
+
+---
+
+# Ajout 2026-11-03 : « Je joue sur plusieurs ordinateurs » (site, bridge 0.7.1, addon 0.22.9)
+
+Problème : l'addon garde sur chaque PC une photo A de chaque perso (sacs, équipement, or, banque :
+`GuildSelfForeverAuditBaseline` + copie de secours `auditBaselineBackups`) et compare l'état à la connexion à A. Sur un
+deuxième PC, A est vieille : tout ce qui s'est passé sur l'autre PC ressort en audit. Tout est additif et **optionnel** :
+seuls les bridges dont la case « Synchroniser mon addon entre mes ordinateurs » est cochée (décochée par défaut)
+envoient et reçoivent des photos ; un ancien bridge, un ancien site ou un ancien addon ne voient rien changer.
+
+## Photo (format commun, JSON)
+
+```json
+{
+  "name": "tester",
+  "character": "Tester",
+  "saved_at": 1800000000,
+  "checksum": "1830179085",
+  "adventure_id": "A1929936150",
+  "guild_key": "classic beta pve#ma guilde",
+  "snapshot": {
+    "time": 1800000000, "gold": 562, "bag_slots": 20, "legacy": true,
+    "items": [[159, 2], [6948, 1]],
+    "equipment": [[4, "154:0"], [16, "36:0"]],
+    "bank": { "time": 1799990000, "legacy": true, "items": [[242709, 1]] }
+  }
+}
+```
+
+- `name` = clé du perso (`GSF:CleanName`), 1 à 64 octets sans caractère de contrôle, `|` ni `~` ; `character` (facultatif)
+  = nom affiché, ≤ 64 octets sans contrôle ni `|` ; `saved_at` > 0 (site : au plus 5 min dans le futur) ;
+  `checksum` = empreinte de l'addon (`snapshotFingerprint`), 1 à 32 `[0-9A-Za-z]` ; `adventure_id` 1 à 64
+  `[A-Za-z0-9_-]` ; `guild_key` = clé **telle qu'écrite par l'addon** (`guildKey` du record, pas normalisée), 1 à 160
+  octets avec `#`.
+- `snapshot` : `time` ≥ 0, `gold` 0 à 2147483647, `bag_slots` 0 à 1000 (défaut 0), `legacy` seulement si vrai ;
+  `items` = `[identifiant 1-9999999, nombre 0-1000000]` (1000 au plus, identifiants triés et uniques) ; `equipment` =
+  `[emplacement 1-23, "objet:enchantement"]` (texte ≤ 64 octets, emplacements triés et uniques) ; `bank` facultative,
+  même règle pour `items`. Rien d'autre (seul ce qui entre dans `checksum` est transporté).
+- Une photo dont un champ est invalide est écartée seule, jamais tout l'envoi ni toute la réponse.
+
+## Lecture (bridge, `gsf-core` `model::baseline`)
+
+- Sources : `GuildSelfForeverAuditBaseline` de chaque fichier de perso (nom = `character` du record, sinon nom du
+  dossier du perso) et `GuildFoundForeverDB.guilds[*].auditBaselineBackups[*]` du fichier compte (nom = `character`).
+- Écartée : `snapshot.captureComplete == false`, clé d'objet non entière, valeur non entière, sans `adventureID`,
+  `guildKey` ou `checksum`, hors limites. Emplacements d'équipement hors 1-23 ignorés (hors empreinte). Banque sans
+  `time` : heure de la photo (comme `cloneSnapshot`).
+- La plus récente (`savedAt`) par perso, tous comptes WoW du PC confondus, 50 au plus (les plus récentes).
+
+## Envoi : `POST /api/v1/bridge/audit-baselines` (`bridge:push`, routes de données : 403/426 comme ailleurs)
+
+- Corps `{"baselines": [<photo>, …]}`, gzip accepté (comme les snapshots), 4 Mo décompressé, 50 photos au plus
+  (sinon `422 validation_failed`).
+- Réponse `200 {"stored": n, "kept": n, "ignored": [{"name": "…", "reason": "invalid"|"guild_not_tracked"|"not_linked"|"ambiguous"}]}`.
+  `kept` = photo pas plus récente que celle déjà gardée (rien n'est écrit).
+- Bridge : envoyé avec ses envois habituels (après la lecture des SavedVariables : démarrage, fichier modifié,
+  connexion, « Envoyer maintenant ») et quand la case vient d'être cochée ; seulement si la case est cochée et que
+  la liste a changé depuis le dernier envoi accepté (empreinte SHA-256 dans `state.json`, `audit_baselines_hash`) ;
+  réseau ou 5xx : gardé en mémoire et renvoyé à la tâche d'une minute.
+- Vigie (appareil sans compte) : `409 audit_sync_needs_account` (jamais 403, qui ferait effacer le jeton) ; le bridge
+  le note une fois dans son journal.
+
+## Site : garde-fous (`App\Support\Bridge\AuditBaselines`, table `audit_baseline_syncs`)
+
+- Seulement un perso **lié au compte du jeton** (`characters.user_id`), sans ban actif, dans une guilde suivie
+  (`guild_key` résolue) ; `name` comparé à `name_key` ; plusieurs persos du compte avec ce nom : départagés par le
+  royaume de `guild_key`, sinon `ambiguous`.
+- Une ligne par perso (`character_id` unique) : `user_id`, `saved_at`, `payload` (photo réécrite champ par champ, 64 Ko
+  au plus). Une photo n'est remplacée que par une **plus récente** (`saved_at` strictement plus grand), sauf si la
+  ligne venait d'un autre compte (perso relié depuis). Ligne effacée 90 jours après le dernier envoi (`model:prune`).
+- Ouvert aux jetons officier, membre de confiance et membre simple (la photo passe aussi pour un membre simple, dont
+  le snapshot ne porte que ses preuves : elle voyage par cette route à part, jamais dans le snapshot).
+
+## Oubli : `DELETE /api/v1/bridge/audit-baselines` (`bridge:push`)
+
+- Réponse `200 {"deleted": n}` : **toutes** les photos du compte du jeton sont effacées (décision : le site oublie, il
+  ne se contente pas de ne plus les renvoyer). Les autres PC du compte qui ont encore la case cochée renverront les
+  leurs à leur prochain envoi. Vigie : `409 audit_sync_needs_account`.
+- Bridge : case décochée → `audit_forget_pending` dans `state.json`, demandé tout de suite puis à chaque minute
+  jusqu'à une réponse (`200` ou `409`) ; un refus définitif (autre 4xx) abandonne.
+
+## Données poussées : `GET /api/v1/bridge/pushed-data?audit_baselines=1`
+
+- Paramètre envoyé seulement quand la case est cochée. Clé `audit_baselines` = liste des photos du compte du jeton
+  (persos encore liés, sans ban), 50 au plus, les plus récentes d'abord ; présente (même vide) seulement si le
+  paramètre est là et que le jeton a un compte (jamais pour une vigie). Pour un membre comme pour un collecteur.
+  Incluse dans le hash `version` : cocher/décocher change la version, donc réécrit `Data.lua`.
+- Bridge : relit les données poussées au démarrage (déjà le cas), à la connexion, quand la case change, et, case
+  cochée, **à chaque minute quand le jeu est fermé** (`If-None-Match`, un `304` ne coûte presque rien) : bridge
+  ouvert avant le jeu, une photo prise sur l'autre PC arrive ici en une minute environ. Écrit (jeu fermé, comme le
+  reste), seulement si la clé est présente, chaque photo validée seule, 50 au plus :
+
+```lua
+GSF_PushedData.auditBaselines = {
+    { name = "tester", character = "Tester", savedAt = 1800000000, checksum = "1830179085",
+      adventureID = "A1929936150", guildKey = "classic beta pve#ma guilde",
+      snapshot = { time = 1800000000, gold = 562, bagSlots = 20, legacy = true,
+                   items = { [159] = 2, [6948] = 1 }, equipment = { [4] = "154:0", [16] = "36:0" },
+                   bank = { time = 1799990000, items = { [242709] = 1 } } } },
+}
+```
+
+## Addon (0.22.9, `Audit.lua`, `selectBaseline`)
+
+- Troisième candidate « site » à côté de la copie dédiée et de la copie de secours, lue directement dans
+  `GSF_PushedData.auditBaselines` (indépendamment de la validation du reste du fichier et de son `guildKey`, pour être
+  prête dès la comparaison de connexion).
+- Retenue seulement si : `name == CleanName(UnitName("player"))`, `character` (si présent) du même perso, `checksum`
+  **présent** et égal à l'empreinte recalculée, `adventureID` **présent** et égal à l'aventure du perso (aventure
+  inconnue sur ce PC = refusée), `guildKey` de la même guilde que la guilde active (comparaison sans espaces ni numéro
+  de royaume relié), puis les validations habituelles (`baselineRecordValid` : forme, date ≤ maintenant + 5 min).
+- La plus récente gagne (`savedAt`) ; à égalité la copie dédiée garde la place. Gagnante : recopiée dans la copie
+  dédiée (`source = "site"`, `recovered`), visible dans `/gsf auditstatus`.

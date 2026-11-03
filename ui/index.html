@@ -22,6 +22,7 @@
           <li>Une fois connecté, il envoie à gsforever.com les triches vues en jeu par l'addon (sur tes persos ou reçues des autres), tes audits et les morts. Pas la liste de ta guilde : seul le bridge d'un officier ou d'un collecteur de confiance l'envoie aussi.</li>
           <li>Une fois connecté, il dit toutes les 5 minutes à gsforever.com qu'il est lancé et si WoW est ouvert, pour savoir à quelles heures la guilde est surveillée.</li>
           <li>Quand WoW est fermé, il écrit l'addon de données de la guilde : liste des bannis, guildes alliées et, selon ton niveau, canal de la fédération, tombola, joueurs blanchis.</li>
+          <li>Seulement si tu coches « Synchroniser mon addon entre mes ordinateurs » : il envoie à gsforever.com ce que portent tes persos (sacs, équipement, or, banque) pour tes autres ordinateurs, et rien à personne d'autre.</li>
           <li>Avant que tu te connectes, il contacte gsforever.com seulement pour chercher les mises à jour. Rien d'autre.</li>
         </ul>
         <p>
@@ -52,6 +53,23 @@
             <button id="update-later-btn" type="button" class="secondary" hidden></button>
           </div>
           <p id="error" class="error" role="alert" hidden></p>
+        </section>
+
+        <section id="multipc" class="panel" aria-labelledby="multipc-title">
+          <div class="panel-body">
+            <h2 id="multipc-title" class="panel-title">Je joue sur plusieurs ordinateurs ?</h2>
+            <div class="field">
+              <label class="check" for="audit-sync">
+                <input id="audit-sync" type="checkbox" />
+                Synchroniser mon addon entre mes ordinateurs
+              </label>
+              <p class="hint">Coche la case sur chacun de tes ordinateurs : ce que portent tes persos (sacs, équipement, or, banque) passe de l'un à l'autre, et l'addon ne prend plus pour suspect ce que tu as fait sur l'autre ordinateur.</p>
+              <p class="hint">Avant de jouer, ouvre le bridge une minute avant de lancer le jeu : c'est le temps qu'il récupère tes persos.</p>
+              <p class="hint">Décocher efface ces données du site. Personne d'autre que toi ne les reçoit.</p>
+              <p id="audit-sync-note" class="hint" hidden></p>
+              <p id="audit-sync-error" class="error" role="alert" hidden></p>
+            </div>
+          </div>
         </section>
 
         <details id="settings" class="panel">

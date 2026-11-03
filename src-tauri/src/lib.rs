@@ -29,6 +29,8 @@ pub enum Trigger {
     Rewatch,
     /// Connexion réussie : vider la file, données poussées.
     LoggedIn,
+    /// Case « Synchroniser mon addon entre mes ordinateurs » changée.
+    AuditSyncChanged,
 }
 
 /// État partagé de l'application.
@@ -97,7 +99,7 @@ async fn status_emitter(app: AppHandle, mut rx: mpsc::UnboundedReceiver<()>) {
 }
 
 /// Boucle de fond : synchronisation au démarrage et à chaque changement,
-/// file d'attente chaque minute, jeu fermé toutes les 5 s (données poussées en attente), données poussées toutes les
+/// file d'attente chaque minute (et, case « plusieurs ordinateurs » cochée, données poussées jeu fermé), jeu fermé toutes les 5 s (données poussées en attente), données poussées toutes les
 /// 15 minutes, signal de vie au démarrage puis toutes les 5 minutes, mises à jour au démarrage puis toutes les heures,
 /// enregistrement d'appareil (contrat « vigies ») au démarrage, à chaque
 /// changement de SavedVariables et toutes les 5 minutes tant qu'il n'y a
@@ -165,6 +167,7 @@ async fn background(app: AppHandle, mut rx: mpsc::UnboundedReceiver<Trigger>) {
                             engine.heartbeat().await;
                             updater::check_in_background(&app).await;
                         }
+                        Trigger::AuditSyncChanged => engine.audit_sync_changed().await,
                     }
                 }
             }
@@ -233,6 +236,7 @@ pub fn run() {
             commands::reset_wow_dir,
             commands::set_base_url,
             commands::open_repo,
+            commands::set_audit_sync,
             updater::check_update,
             updater::install_update,
             desktop::get_autostart,

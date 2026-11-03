@@ -267,6 +267,12 @@ input::placeholder {
   padding: 0 1.25rem 1.25rem;
 }
 
+.panel-title {
+  margin: 0;
+  padding-top: 0.75rem;
+  font-size: 1rem;
+}
+
 .panel.inner {
   margin-top: 1.25rem;
   background: var(--surface-2);
