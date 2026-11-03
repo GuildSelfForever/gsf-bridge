@@ -94,8 +94,8 @@ d'audience, aucune publicité. Chaque requête porte la version du bridge (`User
     l'addon, remis en forme, selon ton niveau (voir plus bas). C'est ce que l'addon a vu et enregistré **sur ce PC**.
     Pour un officier ou un collecteur de confiance : nom et royaume des guildes,
     membres croisés par l'addon (nom, dernière fois vu, version de l'addon), liste de la guilde si l'addon l'a
-    relevée (rang, classe, niveau, dernière connexion), recrues, demandes, audits d'équipement, de sacs et d'or,
-    triches détectées, morts, banque de guilde, métiers, guildes alliées, codes de liaison Discord (`/gsf link`),
+    relevée (rang, classe, niveau, dernière connexion), recrues, demandes, audits d'équipement, de sacs et d'or
+    (et, depuis l'addon 0.22.11, temps de jeu `/played` et niveau quand un perso a joué sans l'addon), triches détectées, morts, banque de guilde, métiers, guildes alliées, codes de liaison Discord (`/gsf link`),
     identités Battle.net des membres (empreinte du BattleTag et identifiant de compte aléatoire tiré par l'addon ;
     BattleTag en clair seulement s'il a été reçu par un officier). Quel que soit le niveau, s'y ajoutent les chemins des fichiers lus à
     partir de `WTF` (donc **le nom du dossier de ton compte WoW**, des royaumes et des persos), leurs dates de
@@ -111,7 +111,7 @@ d'audience, aucune publicité. Chaque requête porte la version du bridge (`User
   joue sur plusieurs ordinateurs ? ») : l'addon garde sur chaque PC une photo de chaque perso (sacs, équipement, or,
   banque) pour repérer ce qui a changé pendant que l'addon ne regardait pas. Case cochée, le bridge envoie au site,
   avec ses envois habituels, la dernière photo des persos de ce PC (contenu des sacs, de l'équipement et de la
-  banque, or, date, identifiant d'aventure, guilde) ; il demande au site, au démarrage, à chaque minute quand le jeu
+  banque, or, date, identifiant d'aventure, guilde, et depuis l'addon 0.22.11 temps de jeu `/played` et niveau) ; il demande au site, au démarrage, à chaque minute quand le jeu
   est fermé et avec les données habituelles, les photos prises sur tes autres PC, et les écrit dans
   `GuildSelfForever_Data`, jeu fermé. Le site ne garde que la plus récente par perso, seulement pour des persos liés
   à ton compte, et ne la renvoie qu'à tes propres bridges qui ont aussi coché la case. Décocher demande au site
@@ -119,7 +119,7 @@ d'audience, aucune publicité. Chaque requête porte la version du bridge (`User
   « vigie » (pas de compte).
 - **Ce qui part dépend de ton niveau.** Un officier ou un collecteur de confiance (désigné par un officier sur le
   site) envoie tout ce qui est listé plus haut, dont la liste de la guilde. Un **membre** n'envoie que les preuves
-  de triche : les triches détectées sur ses persos et celles que son addon a reçues, ses audits et ceux qu'il porte
+  de triche : les triches détectées sur ses persos et celles que son addon a reçues, ses audits (temps de jeu et niveau compris) et ceux qu'il porte
   pour d'autres joueurs, et les morts vues par l'addon, avec le nom et le royaume de la guilde. Il n'envoie ni la
   liste de la guilde, ni les membres croisés, ni les demandes, ni la banque, ni les métiers, ni les identités
   Battle.net, ni les codes de liaison (`snapshot.rs`, `MEMBER_GUILD_KEYS`). Le niveau vient du site : rôle du
