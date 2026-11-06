@@ -27,6 +27,7 @@ pub mod lua;
 pub mod prefs;
 pub mod pushed;
 pub mod queue;
+pub mod secretfile;
 pub mod snapshot;
 pub mod state;
 pub mod svread;

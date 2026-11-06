@@ -8,8 +8,8 @@ mod updater;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use gsf_sync::auth::{KeyringDeviceSecretStore, KeyringStore};
 use gsf_sync::engine::{Engine, EngineOptions, Level, Notifier};
+use gsf_sync::secretfile::{FallbackDeviceSecretStore, FallbackTokenStore};
 use gsf_sync::watch::{self, SvWatcher, DEFAULT_DEBOUNCE};
 use gsf_sync::wow::{detect_install_root, SystemGameDetector};
 use tauri::{AppHandle, Emitter, Manager};
@@ -206,8 +206,8 @@ pub fn run() {
             });
             let engine = Arc::new(Engine::new(
                 EngineOptions::new(&data_dir),
-                Arc::new(KeyringStore::new()),
-                Arc::new(KeyringDeviceSecretStore::new()),
+                Arc::new(FallbackTokenStore::new(&data_dir)),
+                Arc::new(FallbackDeviceSecretStore::new(&data_dir)),
                 Arc::new(SystemGameDetector::new()),
                 detect_install_root(),
                 notifier,

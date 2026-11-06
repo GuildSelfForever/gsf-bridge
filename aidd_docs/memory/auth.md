@@ -26,5 +26,6 @@ flowchart LR
 
 ## Sessions
 
-- Token rangé dans le gestionnaire d'identifiants Windows (`keyring`, service `fr.gs4ever.bridge`, compte `bridge-token`), jamais sur disque ; trait `TokenStore` (`MemoryStore` en test). Secret d'appareil : même service, compte `device-secret` ; trait `DeviceSecretStore` (`MemoryDeviceSecretStore` en test).
+- Token rangé dans le gestionnaire d'identifiants Windows (`keyring`, service `fr.gs4ever.bridge`, compte `bridge-token`) ; trait `TokenStore` (`MemoryStore` en test). Secret d'appareil : même service, compte `device-secret` ; trait `DeviceSecretStore` (`MemoryDeviceSecretStore` en test).
+- Repli (0.7.5, `secretfile.rs`) : si le gestionnaire refuse (« Platform secure storage failure: Windows error code 8 » sur certains PC), le secret va dans `token.protected` / `device-secret.protected` du dossier de données, chiffré par DPAPI pour le seul compte Windows (0600 ailleurs) ; le coffre reste prioritaire et le fichier est effacé dès qu'il accepte de nouveau.
 - Pas de rafraîchissement : un token refusé impose une nouvelle connexion. Changer l'adresse du site dans « Réglages » déconnecte.
