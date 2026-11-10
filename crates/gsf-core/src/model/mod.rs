@@ -119,6 +119,16 @@ pub struct GuildData {
     /// envoyé par son propre bridge (jamais celui d'un autre). Fusionné par personnage, le plus récent `at`
     /// gagne, en entier.
     pub self_identity: Vec<SelfIdentity>,
+    /// `serverStats["<ownKey>"]` (addon ≥ 0.23.0, contrat 2026-11-10 « statistiques du serveur ») :
+    /// statistiques Forever relevées en jeu par le joueur lui-même (`GetStatistic`), transportées par le
+    /// rapport d'audit existant (aucun nouveau message), rangées par chaque officier/collecteur qui le reçoit.
+    /// Fusionné par personnage, le plus récent `at` gagne, en entier. ≤ 800 joueurs, 30 jours côté addon.
+    pub server_stats: Vec<ServerStats>,
+    /// `statChecks["<targetKey>:<at>"]` (addon ≥ 0.23.0, contrat 2026-11-10 « statistiques du serveur ») :
+    /// comparaison de statistiques faite par un officier sur un autre joueur (`GetComparisonStatistic`).
+    /// Fusionné par identifiant (clé brute des SavedVariables). ≤ 200, 30 jours côté addon. Jamais envoyé par
+    /// un bridge de simple membre (`snapshot::MEMBER_GUILD_KEYS` inchangé pour cette clé).
+    pub stat_checks: Vec<StatCheck>,
     /// Alias « prénom seul » ambigus, laissés sans rattachement.
     pub unresolved_aliases: Vec<UnresolvedAlias>,
 }
@@ -618,4 +628,34 @@ pub struct SelfIdentity {
     pub acct: Option<String>,
     pub btag: Option<String>,
     pub at: i64,
+}
+
+/// `serverStats["<ownKey>"]` (addon ≥ 0.23.0, contrat 2026-11-10 « statistiques du serveur ») :
+/// statistiques Forever relevées en jeu par le joueur lui-même (`GetStatistic`), à la connexion et toutes les
+/// 30 minutes. `stats` ne garde que les 11 identifiants autorisés (vente/achat HV, argent gagné HV, plus
+/// grosse enchère/vente HV, argent dépensé en courriers, argent total obtenu, argent ramassé, argent de
+/// quêtes, argent des marchands, quêtes achevées), en cuivre pour les montants. Fusionné entre profils par
+/// personnage, le plus récent `at` gagne, en entier.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ServerStats {
+    pub character: CharacterRef,
+    pub at: i64,
+    pub level: Option<i64>,
+    pub stats: BTreeMap<String, u64>,
+}
+
+/// `statChecks["<targetKey>:<at>"]` (addon ≥ 0.23.0, contrat 2026-11-10 « statistiques du serveur ») :
+/// comparaison des statistiques d'un autre joueur faite par un officier (`GetComparisonStatistic`, après
+/// `SetAchievementComparisonUnit` + `INSPECT_ACHIEVEMENT_READY`, portée d'inspection). `id` reprend la clé
+/// brute des SavedVariables. Jamais envoyé par un bridge de simple membre.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StatCheck {
+    pub id: String,
+    pub target: CharacterRef,
+    pub officer: CharacterRef,
+    pub at: i64,
+    /// `"auto"` (relevé automatique) | `"manual"` (déclenché par l'officier).
+    pub how: Option<String>,
+    pub level: Option<i64>,
+    pub stats: BTreeMap<String, u64>,
 }

@@ -1174,3 +1174,130 @@ GuildFoundForeverDB = {
         Some("fa2ce2459aec6c5c0d72ca5991cd4cfd")
     );
 }
+
+#[test]
+fn server_stats_cover_valid_invalid_and_merge_newest() {
+    let account = sv(r#"
+GuildFoundForeverDB = {
+  ["lastActiveGuildKey"] = "r one#g",
+  ["guilds"] = {
+    ["r one#g"] = {
+      ["memberPresence"] = {
+        ["kael ombre"] = { ["name"] = "Kael Ombre" },
+      },
+      ["serverStats"] = {
+        ["kael ombre"] = { ["at"] = 200, ["lvl"] = 26,
+          ["s"] = { ["329"] = 20, ["919"] = 1000, ["330"] = -5, ["9999"] = 123 } },
+      },
+    },
+    ["rone#g"] = {
+      ["serverStats"] = {
+        ["kael ombre"] = { ["at"] = 100, ["lvl"] = 99,
+          ["s"] = { ["329"] = 999999, ["98"] = 272 } },
+      },
+    },
+  },
+}
+"#);
+    let g = &normalize(&account, NO_CHARS)[0];
+    assert_eq!(g.server_stats.len(), 1, "{:?}", g.server_stats);
+
+    let kael = &g.server_stats[0];
+    assert_eq!(kael.character.character.as_deref(), Some("kael ombre"));
+    assert_eq!(kael.at, 200, "le plus récent `at` gagne");
+    assert_eq!(
+        kael.level,
+        Some(26),
+        "fusionné en entier, pas champ par champ (pas 99 de l'ancien profil)"
+    );
+    assert_eq!(
+        kael.stats.get("329"),
+        Some(&20),
+        "pas 999999 de l'ancien profil"
+    );
+    assert_eq!(kael.stats.get("919"), Some(&1000));
+    assert!(
+        !kael.stats.contains_key("330"),
+        "valeur négative, clé abandonnée seule"
+    );
+    assert!(
+        !kael.stats.contains_key("9999"),
+        "identifiant hors liste fermée, clé abandonnée seule"
+    );
+    assert!(
+        !kael.stats.contains_key("98"),
+        "absent du relevé gagnant, pas hérité de l'ancien profil"
+    );
+    assert_eq!(kael.stats.len(), 2);
+}
+
+#[test]
+fn stat_checks_cover_valid_invalid_merge_by_id_and_alias() {
+    let account = sv(r#"
+GuildFoundForeverDB = {
+  ["lastActiveGuildKey"] = "r one#g",
+  ["guilds"] = {
+    ["r one#g"] = {
+      ["memberPresence"] = {
+        ["dorian"] = { ["name"] = "Dorian" },
+        ["kael ombre"] = { ["name"] = "Kael Ombre" },
+      },
+      ["statChecks"] = {
+        ["dorian:1794500000"] = { ["target"] = "Dorian", ["by"] = "Kael Ombre",
+          ["at"] = 1794500000, ["how"] = "auto", ["lvl"] = 25,
+          ["s"] = { ["329"] = 20, ["330"] = -5, ["9999"] = 1 } },
+        ["kael ombre:5"] = { ["by"] = "Dorian", ["at"] = 5, ["how"] = "bogus" },
+      },
+    },
+    ["rone#g"] = {
+      ["statChecks"] = {
+        ["dorian:1794500000"] = { ["target"] = "Dorian", ["by"] = "Kael Ombre",
+          ["at"] = 1794500000, ["how"] = "bogus", ["lvl"] = 99,
+          ["s"] = { ["329"] = 999 } },
+      },
+    },
+  },
+}
+"#);
+    let g = &normalize(&account, NO_CHARS)[0];
+    assert_eq!(g.stat_checks.len(), 2, "{:?}", g.stat_checks);
+
+    let dorian = g
+        .stat_checks
+        .iter()
+        .find(|c| c.id == "dorian:1794500000")
+        .unwrap();
+    assert_eq!(dorian.target.character.as_deref(), Some("dorian"));
+    assert_eq!(dorian.officer.character.as_deref(), Some("kael ombre"));
+    assert_eq!(
+        dorian.how.as_deref(),
+        Some("auto"),
+        "fusionné par identifiant, en entier (pas \"bogus\" de l'autre profil)"
+    );
+    assert_eq!(dorian.level, Some(25));
+    assert_eq!(dorian.stats.get("329"), Some(&20));
+    assert!(
+        !dorian.stats.contains_key("330"),
+        "valeur négative, clé abandonnée seule"
+    );
+    assert!(
+        !dorian.stats.contains_key("9999"),
+        "identifiant hors liste fermée, clé abandonnée seule"
+    );
+    assert_eq!(dorian.stats.len(), 1);
+
+    let fallback = g
+        .stat_checks
+        .iter()
+        .find(|c| c.id == "kael ombre:5")
+        .unwrap();
+    assert_eq!(
+        fallback.target.character.as_deref(),
+        Some("kael ombre"),
+        "`target` absent du relevé, recalé sur la clé"
+    );
+    assert_eq!(fallback.officer.character.as_deref(), Some("dorian"));
+    assert_eq!(fallback.how, None, "hors liste fermée, champ seul écarté");
+    assert_eq!(fallback.level, None);
+    assert!(fallback.stats.is_empty());
+}

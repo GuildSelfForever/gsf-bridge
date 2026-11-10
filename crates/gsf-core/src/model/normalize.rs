@@ -369,6 +369,13 @@ fn learn_names(r: &mut Resolver, group: &Group) {
                 }
             }
         }
+        for rec in table_values(v.get("statChecks")) {
+            for field in ["target", "by"] {
+                if let Some(n) = text(rec, field) {
+                    r.learn(&n);
+                }
+            }
+        }
     }
     for b in &group.backups {
         for line in entries(b.value.get("requests")).filter_map(|(_, l)| l.as_bytes()) {
@@ -409,6 +416,8 @@ fn build_guild(key: String, group: &Group) -> GuildData {
     let mut crafted_sightings = Newest::new();
     let mut guild_bank_log: Option<Newest<GuildBankLogEntry>> = None;
     let mut self_identity = Newest::new();
+    let mut server_stats = Newest::new();
+    let mut stat_checks = Newest::new();
     let mut blacklist_actions: BTreeMap<String, BlacklistAction> = BTreeMap::new();
     // Audits reçus du joueur lui-même (authentifiés par le jeu) et audits
     // relayés par un autre membre : le direct l'emporte toujours.
@@ -515,6 +524,26 @@ fn build_guild(key: String, group: &Group) -> GuildData {
                     merged.offer(entry.id.clone(), entry.read_at, entry);
                 }
             }
+        }
+
+        for (k, rec) in table_entries(v.get("serverStats")) {
+            let character = r.resolve(&k, "server_stats");
+            let at = int(rec, "at").unwrap_or(0);
+            server_stats.offer(
+                character.merge_key(),
+                Some(at),
+                ServerStats {
+                    level: int_in(rec, "lvl", 1, MAX_AUDIT_LEVEL),
+                    stats: stat_map(rec.get("s")),
+                    character,
+                    at,
+                },
+            );
+        }
+
+        for (k, rec) in table_entries(v.get("statChecks")) {
+            let sc = stat_check(&k, rec, &mut r);
+            stat_checks.offer(sc.id.clone(), None, sc);
         }
 
         for (k, rec) in entries(v.get("bankItemInfo")) {
@@ -990,6 +1019,8 @@ fn build_guild(key: String, group: &Group) -> GuildData {
         crafted_sightings: crafted_sightings.into_vec(),
         guild_bank_log: guild_bank_log.map(Newest::into_vec),
         self_identity: self_identity.into_vec(),
+        server_stats: server_stats.into_vec(),
+        stat_checks: stat_checks.into_vec(),
         unresolved_aliases: r.into_unresolved(),
     }
 }
@@ -1187,6 +1218,52 @@ const MAX_REMINDERS: i64 = 1_000;
 const MAX_ITEM_ID: i64 = 999_999_999;
 const MAX_REALM_ID: i64 = 99_999;
 const MAX_BANK_TAB: i64 = 8;
+
+/// Identifiants de statistique autorisés (contrat 2026-11-10 « statistiques du serveur »), relevés par
+/// `GetStatistic`/`GetComparisonStatistic` : ventes/achats HV, argent gagné HV, plus grosse enchère/vente HV,
+/// argent dépensé en courriers, argent total obtenu, argent ramassé, argent de quêtes, argent des marchands,
+/// quêtes achevées.
+const ALLOWED_STAT_IDS: &[&str] = &[
+    "329", "330", "919", "331", "332", "1148", "328", "333", "326", "921", "98",
+];
+const STAT_CHECK_HOW: &[&str] = &["auto", "manual"];
+/// Borne large (montants en cuivre comme les compteurs) du contrat 2026-11-10.
+const MAX_STAT_VALUE: i64 = 1_000_000_000_000;
+
+/// Table `s` (`serverStats`/`statChecks`) → uniquement les 11 identifiants autorisés, valeurs entières ≥ 0 ;
+/// identifiant hors liste ou valeur invalide/négative = clé abandonnée seule.
+fn stat_map(v: Option<&Value>) -> BTreeMap<String, u64> {
+    entries(v)
+        .filter_map(|(k, val)| {
+            let id = k.as_str_lossy()?.into_owned();
+            if !ALLOWED_STAT_IDS.contains(&id.as_str()) {
+                return None;
+            }
+            let n = val.as_i64()?;
+            (0..=MAX_STAT_VALUE).contains(&n).then_some((id, n as u64))
+        })
+        .collect()
+}
+
+/// `statChecks["<targetKey>:<at>"]` → [`StatCheck`] (contrat 2026-11-10 « statistiques du serveur »). `id`
+/// reprend la clé brute des SavedVariables (`target` recalé sur la clé si absent du relevé, comme
+/// `presenceGaps`).
+fn stat_check(key: &str, rec: &Value, r: &mut Resolver) -> StatCheck {
+    let target_raw = text(rec, "target")
+        .or_else(|| key.split_once(':').map(|(t, _)| t.to_string()))
+        .unwrap_or_default();
+    let target = r.resolve(&target_raw, "stat_checks.target");
+    let officer = r.resolve(&text(rec, "by").unwrap_or_default(), "stat_checks.officer");
+    StatCheck {
+        id: key.to_string(),
+        target,
+        officer,
+        at: int(rec, "at").unwrap_or(0),
+        how: enum_field(rec, "how", STAT_CHECK_HOW),
+        level: int_in(rec, "lvl", 1, MAX_AUDIT_LEVEL),
+        stats: stat_map(rec.get("s")),
+    }
+}
 const MAX_COUNT: i64 = 1_000_000;
 const MAX_AMOUNT: i64 = 1_000_000_000_000;
 const MAX_AGE_HOURS: i64 = 100_000;
