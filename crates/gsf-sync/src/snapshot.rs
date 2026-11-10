@@ -79,6 +79,9 @@ pub const MEMBER_GUILD_KEYS: &[&str] = &[
     "presence_gaps",
     "crafted_sightings",
     "self_identity",
+    // Contrat 2026-11-10 « statistiques du serveur » : ses propres relevés (le site filtre aux persos de
+    // l'envoyeur). `stat_checks` (comparaisons faites par un officier) reste réservé aux officiers/collecteurs.
+    "server_stats",
 ];
 
 /// Ne garde de chaque guilde que les clés de [`MEMBER_GUILD_KEYS`] (fonction
@@ -241,6 +244,7 @@ mod tests {
             "members": [{"x": 1}], "bridge_roster": [], "member_identities": [], "requests": [],
             "bank_snapshots": {}, "bridge_link_outbox": [], "collector_sessions": [],
             "presence_gaps": [], "crafted_sightings": [], "self_identity": [],
+            "server_stats": [], "stat_checks": [{"id": "officer-only"}],
             "guild_bank_log": [{"id": "collector-only"}]
         }]));
         let m = s.for_member();
@@ -248,6 +252,14 @@ mod tests {
         assert!(
             !g.contains_key("guild_bank_log"),
             "collecteurs seulement, jamais envoyé par un membre simple"
+        );
+        assert!(
+            g.contains_key("server_stats"),
+            "ses propres relevés, le site filtre aux persos de l'envoyeur"
+        );
+        assert!(
+            !g.contains_key("stat_checks"),
+            "comparaison faite par un officier, jamais envoyée par un membre simple"
         );
         let mut keys: Vec<&str> = g.keys().map(String::as_str).collect();
         keys.sort_unstable();
