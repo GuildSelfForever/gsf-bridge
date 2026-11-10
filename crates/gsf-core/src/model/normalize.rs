@@ -1222,16 +1222,30 @@ const MAX_BANK_TAB: i64 = 8;
 /// Identifiants de statistique autorisés (contrat 2026-11-10 « statistiques du serveur »), relevés par
 /// `GetStatistic`/`GetComparisonStatistic` : ventes/achats HV, argent gagné HV, plus grosse enchère/vente HV,
 /// argent dépensé en courriers, argent total obtenu, argent ramassé, argent de quêtes, argent des marchands,
-/// quêtes achevées, plus grande quantité d'argent possédée.
+/// quêtes achevées, plus grande quantité d'argent possédée ; plus `played` (temps de jeu total, secondes,
+/// hors `GetStatistic`, borné à part).
 const ALLOWED_STAT_IDS: &[&str] = &[
-    "329", "330", "919", "331", "332", "1148", "328", "333", "326", "921", "98", "334",
+    "329", "330", "919", "331", "332", "1148", "328", "333", "326", "921", "98", "334", "played",
 ];
 const STAT_CHECK_HOW: &[&str] = &["auto", "manual"];
 /// Borne large (montants en cuivre comme les compteurs) du contrat 2026-11-10.
 const MAX_STAT_VALUE: i64 = 1_000_000_000_000;
+/// Borne de `played` (secondes, contrat 2026-11-10) : ~3 169 ans, largement au-dessus de tout temps de jeu
+/// réel, mais bien en deçà de `MAX_STAT_VALUE`.
+const MAX_PLAYED_SECONDS: i64 = 100_000_000;
 
-/// Table `s` (`serverStats`/`statChecks`) → uniquement les 12 identifiants autorisés, valeurs entières ≥ 0 ;
-/// identifiant hors liste ou valeur invalide/négative = clé abandonnée seule.
+/// Borne haute d'un identifiant autorisé de `stat_map` (`MAX_PLAYED_SECONDS` pour `played`, `MAX_STAT_VALUE`
+/// sinon).
+fn stat_bound(id: &str) -> i64 {
+    if id == "played" {
+        MAX_PLAYED_SECONDS
+    } else {
+        MAX_STAT_VALUE
+    }
+}
+
+/// Table `s` (`serverStats`/`statChecks`) → uniquement les 13 identifiants autorisés, valeurs entières ≥ 0 ;
+/// identifiant hors liste ou valeur invalide/négative/hors borne = clé abandonnée seule.
 fn stat_map(v: Option<&Value>) -> BTreeMap<String, u64> {
     entries(v)
         .filter_map(|(k, val)| {
@@ -1240,7 +1254,7 @@ fn stat_map(v: Option<&Value>) -> BTreeMap<String, u64> {
                 return None;
             }
             let n = val.as_i64()?;
-            (0..=MAX_STAT_VALUE).contains(&n).then_some((id, n as u64))
+            (0..=stat_bound(&id)).contains(&n).then_some((id, n as u64))
         })
         .collect()
 }

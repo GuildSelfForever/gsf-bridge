@@ -1187,7 +1187,8 @@ GuildFoundForeverDB = {
       },
       ["serverStats"] = {
         ["kael ombre"] = { ["at"] = 200, ["lvl"] = 26,
-          ["s"] = { ["329"] = 20, ["919"] = 1000, ["330"] = -5, ["9999"] = 123, ["334"] = 950000 } },
+          ["s"] = { ["329"] = 20, ["919"] = 1000, ["330"] = -5, ["9999"] = 123, ["334"] = 950000,
+            ["played"] = 1036800 } },
       },
     },
     ["rone#g"] = {
@@ -1221,6 +1222,11 @@ GuildFoundForeverDB = {
         Some(&950000),
         "334 (plus grande quantité d'argent possédée) gardé"
     );
+    assert_eq!(
+        kael.stats.get("played"),
+        Some(&1_036_800),
+        "played (temps de jeu total, secondes) gardé"
+    );
     assert!(
         !kael.stats.contains_key("330"),
         "valeur négative, clé abandonnée seule"
@@ -1233,7 +1239,7 @@ GuildFoundForeverDB = {
         !kael.stats.contains_key("98"),
         "absent du relevé gagnant, pas hérité de l'ancien profil"
     );
-    assert_eq!(kael.stats.len(), 3);
+    assert_eq!(kael.stats.len(), 4);
 }
 
 #[test]
@@ -1250,7 +1256,7 @@ GuildFoundForeverDB = {
       ["statChecks"] = {
         ["dorian:1794500000"] = { ["target"] = "Dorian", ["by"] = "Kael Ombre",
           ["at"] = 1794500000, ["how"] = "auto", ["lvl"] = 25,
-          ["s"] = { ["329"] = 20, ["330"] = -5, ["9999"] = 1 } },
+          ["s"] = { ["329"] = 20, ["330"] = -5, ["9999"] = 1, ["played"] = 999999999 } },
         ["kael ombre:5"] = { ["by"] = "Dorian", ["at"] = 5, ["how"] = "bogus" },
       },
     },
@@ -1288,6 +1294,10 @@ GuildFoundForeverDB = {
     assert!(
         !dorian.stats.contains_key("9999"),
         "identifiant hors liste fermée, clé abandonnée seule"
+    );
+    assert!(
+        !dorian.stats.contains_key("played"),
+        "played au-delà de sa borne propre (100 000 000 s), clé abandonnée seule"
     );
     assert_eq!(dorian.stats.len(), 1);
 
