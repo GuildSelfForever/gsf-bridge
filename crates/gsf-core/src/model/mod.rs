@@ -632,10 +632,10 @@ pub struct SelfIdentity {
 
 /// `serverStats["<ownKey>"]` (addon ≥ 0.23.0, contrat 2026-11-10 « statistiques du serveur ») :
 /// statistiques Forever relevées en jeu par le joueur lui-même (`GetStatistic`), à la connexion et toutes les
-/// 30 minutes. `stats` ne garde que les 11 identifiants autorisés (vente/achat HV, argent gagné HV, plus
+/// 30 minutes. `stats` ne garde que les 12 identifiants autorisés (vente/achat HV, argent gagné HV, plus
 /// grosse enchère/vente HV, argent dépensé en courriers, argent total obtenu, argent ramassé, argent de
-/// quêtes, argent des marchands, quêtes achevées), en cuivre pour les montants. Fusionné entre profils par
-/// personnage, le plus récent `at` gagne, en entier.
+/// quêtes, argent des marchands, quêtes achevées, plus grande quantité d'argent possédée), en cuivre pour
+/// les montants. Fusionné entre profils par personnage, le plus récent `at` gagne, en entier.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ServerStats {
     pub character: CharacterRef,

@@ -1187,7 +1187,7 @@ GuildFoundForeverDB = {
       },
       ["serverStats"] = {
         ["kael ombre"] = { ["at"] = 200, ["lvl"] = 26,
-          ["s"] = { ["329"] = 20, ["919"] = 1000, ["330"] = -5, ["9999"] = 123 } },
+          ["s"] = { ["329"] = 20, ["919"] = 1000, ["330"] = -5, ["9999"] = 123, ["334"] = 950000 } },
       },
     },
     ["rone#g"] = {
@@ -1216,6 +1216,11 @@ GuildFoundForeverDB = {
         "pas 999999 de l'ancien profil"
     );
     assert_eq!(kael.stats.get("919"), Some(&1000));
+    assert_eq!(
+        kael.stats.get("334"),
+        Some(&950000),
+        "334 (plus grande quantité d'argent possédée) gardé"
+    );
     assert!(
         !kael.stats.contains_key("330"),
         "valeur négative, clé abandonnée seule"
@@ -1228,7 +1233,7 @@ GuildFoundForeverDB = {
         !kael.stats.contains_key("98"),
         "absent du relevé gagnant, pas hérité de l'ancien profil"
     );
-    assert_eq!(kael.stats.len(), 2);
+    assert_eq!(kael.stats.len(), 3);
 }
 
 #[test]

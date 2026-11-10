@@ -1086,7 +1086,8 @@ Remplacé par `self_identity` : chaque joueur envoie son propre BattleTag par so
 
 Statistiques Forever relevées en jeu (GSF Probe, build 70862) : 329 Mises en vente HV, 330 Achats HV, 919 Argent
 gagné HV, 331 Plus grosse enchère HV, 332 Plus grosse vente HV, 1148 Argent dépensé en courriers, 328 Argent total
-obtenu, 333 Argent ramassé, 326 Argent de quêtes, 921 Argent des marchands, 98 Quêtes achevées. Valeurs lues par
+obtenu, 333 Argent ramassé, 326 Argent de quêtes, 921 Argent des marchands, 98 Quêtes achevées, 334 Plus grande
+quantité d'argent possédée. Valeurs lues par
 `GetStatistic(id)` (soi) ou `GetComparisonStatistic(id)` (autre joueur, après `SetAchievementComparisonUnit(unit)` +
 `INSPECT_ACHIEVEMENT_READY`, portée d'inspection) ; les montants arrivent en texte avec icônes, convertis en cuivre
 côté addon ; « -- » = 0. Additif, `MODEL_VERSION` reste 1.
@@ -1096,7 +1097,7 @@ côté addon ; « -- » = 0. Additif, `MODEL_VERSION` reste 1.
 ```lua
 serverStats["<ownKey>"] = { at = <epoch>, lvl = <int>, s = { ["329"] = <int>, ["330"] = <int>, ["919"] = <cuivre>,
   ["331"] = <cuivre>, ["332"] = <cuivre>, ["1148"] = <cuivre>, ["328"] = <cuivre>, ["333"] = <cuivre>,
-  ["326"] = <cuivre>, ["921"] = <cuivre>, ["98"] = <int> } }
+  ["326"] = <cuivre>, ["921"] = <cuivre>, ["98"] = <int>, ["334"] = <cuivre> } }
   -- relevé par le joueur lui-même à la connexion et toutes les 30 min ; pas de nouveau message, les valeurs
   -- voyagent dans le rapport d'audit existant (même relais vers les officiers/collecteurs) et chaque
   -- officier/collecteur qui le reçoit les range dans serverStats[<clé du joueur>] (dernière valeur par joueur,
@@ -1111,12 +1112,12 @@ statChecks["<targetKey>:<at>"] = { target = "Key", by = "OfficerKey", at = <epoc
 ```json
 "server_stats": [{ "character": "<CharacterRef>", "at": 1794500000, "level": 25,
   "stats": { "329": 0, "330": 0, "919": 0, "331": 0, "332": 0, "1148": 3090, "328": 428550, "333": 29709,
-    "326": 112235, "921": 286606, "98": 272 } }],
+    "326": 112235, "921": 286606, "98": 272, "334": 950000 } }],
 "stat_checks": [{ "id": "dorian:1794500000", "target": "<CharacterRef>", "officer": "<CharacterRef>",
   "at": 1794500000, "how": "auto", "level": 25, "stats": { "...mêmes clés..." } }]
 ```
 
-- `stats` : uniquement les 11 identifiants ci-dessus (chaînes), valeurs entières ≥ 0 (cuivre pour les montants) ;
+- `stats` : uniquement les 12 identifiants ci-dessus (chaînes), valeurs entières ≥ 0 (cuivre pour les montants) ;
   identifiant hors liste ou valeur négative = clé abandonnée seule, jamais tout l'enregistrement.
 - `server_stats` (défaut liste vide) : depuis un bridge officier/collecteur pour n'importe quel membre (relayé par
   l'audit, donc déclaré par le joueur), depuis un bridge de simple membre seulement pour ses propres personnages

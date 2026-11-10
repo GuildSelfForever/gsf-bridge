@@ -1222,15 +1222,15 @@ const MAX_BANK_TAB: i64 = 8;
 /// Identifiants de statistique autorisés (contrat 2026-11-10 « statistiques du serveur »), relevés par
 /// `GetStatistic`/`GetComparisonStatistic` : ventes/achats HV, argent gagné HV, plus grosse enchère/vente HV,
 /// argent dépensé en courriers, argent total obtenu, argent ramassé, argent de quêtes, argent des marchands,
-/// quêtes achevées.
+/// quêtes achevées, plus grande quantité d'argent possédée.
 const ALLOWED_STAT_IDS: &[&str] = &[
-    "329", "330", "919", "331", "332", "1148", "328", "333", "326", "921", "98",
+    "329", "330", "919", "331", "332", "1148", "328", "333", "326", "921", "98", "334",
 ];
 const STAT_CHECK_HOW: &[&str] = &["auto", "manual"];
 /// Borne large (montants en cuivre comme les compteurs) du contrat 2026-11-10.
 const MAX_STAT_VALUE: i64 = 1_000_000_000_000;
 
-/// Table `s` (`serverStats`/`statChecks`) → uniquement les 11 identifiants autorisés, valeurs entières ≥ 0 ;
+/// Table `s` (`serverStats`/`statChecks`) → uniquement les 12 identifiants autorisés, valeurs entières ≥ 0 ;
 /// identifiant hors liste ou valeur invalide/négative = clé abandonnée seule.
 fn stat_map(v: Option<&Value>) -> BTreeMap<String, u64> {
     entries(v)
