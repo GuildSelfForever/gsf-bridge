@@ -74,6 +74,11 @@ pub const MEMBER_GUILD_KEYS: &[&str] = &[
     "bridge_local_violations",
     "bridge_carried_audits",
     "deaths",
+    // Contrat 2026-11-10 : preuves supplémentaires d'un membre simple. `guild_bank_log` reste exclu
+    // (collecteurs seulement, étape 1 du plan).
+    "presence_gaps",
+    "crafted_sightings",
+    "self_identity",
 ];
 
 /// Ne garde de chaque guilde que les clés de [`MEMBER_GUILD_KEYS`] (fonction
@@ -234,10 +239,16 @@ mod tests {
             "audit_reports": [], "audit_pending": [{"source": "x"}], "bridge_violations": null,
             "bridge_local_violations": [{"id": "v"}], "bridge_carried_audits": null, "deaths": [],
             "members": [{"x": 1}], "bridge_roster": [], "member_identities": [], "requests": [],
-            "bank_snapshots": {}, "bridge_link_outbox": [], "collector_sessions": []
+            "bank_snapshots": {}, "bridge_link_outbox": [], "collector_sessions": [],
+            "presence_gaps": [], "crafted_sightings": [], "self_identity": [],
+            "guild_bank_log": [{"id": "collector-only"}]
         }]));
         let m = s.for_member();
         let g = m.guilds[0].as_object().unwrap();
+        assert!(
+            !g.contains_key("guild_bank_log"),
+            "collecteurs seulement, jamais envoyé par un membre simple"
+        );
         let mut keys: Vec<&str> = g.keys().map(String::as_str).collect();
         keys.sort_unstable();
         let mut expected = MEMBER_GUILD_KEYS.to_vec();
