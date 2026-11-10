@@ -1081,3 +1081,55 @@ Remplacé par `self_identity` : chaque joueur envoie son propre BattleTag par so
   compte qui possède ce personnage (jamais celui rapporté par un tiers).
 - `trust` (`officer` | `vigie` | `trusted_member` | `member`, déduit du jeton comme ailleurs dans ce contrat) enregistré
   sur chaque ligne ingérée de `presence_gaps`, `crafted_sightings`, `guild_bank_log`, `self_identity`.
+
+## Ajout : statistiques du serveur (bridge 0.8.0)
+
+Statistiques Forever relevées en jeu (GSF Probe, build 70862) : 329 Mises en vente HV, 330 Achats HV, 919 Argent
+gagné HV, 331 Plus grosse enchère HV, 332 Plus grosse vente HV, 1148 Argent dépensé en courriers, 328 Argent total
+obtenu, 333 Argent ramassé, 326 Argent de quêtes, 921 Argent des marchands, 98 Quêtes achevées. Valeurs lues par
+`GetStatistic(id)` (soi) ou `GetComparisonStatistic(id)` (autre joueur, après `SetAchievementComparisonUnit(unit)` +
+`INSPECT_ACHIEVEMENT_READY`, portée d'inspection) ; les montants arrivent en texte avec icônes, convertis en cuivre
+côté addon ; « -- » = 0. Additif, `MODEL_VERSION` reste 1.
+
+### SavedVariables (profil de guilde de l'addon, ≥ 0.23.0)
+
+```lua
+serverStats["<ownKey>"] = { at = <epoch>, lvl = <int>, s = { ["329"] = <int>, ["330"] = <int>, ["919"] = <cuivre>,
+  ["331"] = <cuivre>, ["332"] = <cuivre>, ["1148"] = <cuivre>, ["328"] = <cuivre>, ["333"] = <cuivre>,
+  ["326"] = <cuivre>, ["921"] = <cuivre>, ["98"] = <int> } }
+  -- relevé par le joueur lui-même à la connexion et toutes les 30 min ; pas de nouveau message, les valeurs
+  -- voyagent dans le rapport d'audit existant (même relais vers les officiers/collecteurs) et chaque
+  -- officier/collecteur qui le reçoit les range dans serverStats[<clé du joueur>] (dernière valeur par joueur,
+  -- cap 800 joueurs, TTL 30 j) ; le joueur garde aussi la sienne.
+statChecks["<targetKey>:<at>"] = { target = "Key", by = "OfficerKey", at = <epoch>, how = "auto" | "manual",
+  lvl = <int> | nil, s = { ...mêmes clés... } }
+  -- comparaison faite par un officier sur un autre joueur (cap 200, TTL 30 j)
+```
+
+### `GuildData` (snapshot bridge → site)
+
+```json
+"server_stats": [{ "character": "<CharacterRef>", "at": 1794500000, "level": 25,
+  "stats": { "329": 0, "330": 0, "919": 0, "331": 0, "332": 0, "1148": 3090, "328": 428550, "333": 29709,
+    "326": 112235, "921": 286606, "98": 272 } }],
+"stat_checks": [{ "id": "dorian:1794500000", "target": "<CharacterRef>", "officer": "<CharacterRef>",
+  "at": 1794500000, "how": "auto", "level": 25, "stats": { "...mêmes clés..." } }]
+```
+
+- `stats` : uniquement les 11 identifiants ci-dessus (chaînes), valeurs entières ≥ 0 (cuivre pour les montants) ;
+  identifiant hors liste ou valeur négative = clé abandonnée seule, jamais tout l'enregistrement.
+- `server_stats` (défaut liste vide) : depuis un bridge officier/collecteur pour n'importe quel membre (relayé par
+  l'audit, donc déclaré par le joueur), depuis un bridge de simple membre seulement pour ses propres personnages
+  (ajouté à `snapshot::MEMBER_GUILD_KEYS`, le site filtre aux personnages du compte qui envoie). Fusionné entre
+  profils par personnage, le plus récent `at` gagne, **en entier** (jamais champ par champ).
+- `stat_checks` : seulement depuis un bridge officier/collecteur ; un simple membre ne l'envoie pas
+  (`snapshot::MEMBER_GUILD_KEYS` inchangé pour cette clé). `id` reprend la clé brute des SavedVariables
+  (`"<targetKey>:<at>"`) ; `target` recalé sur la clé si absent du relevé (comme `presenceGaps`/`suspect`).
+  Fusionné entre profils par identifiant, **en entier**.
+- `learn_names` (résolution des alias « prénom seul ») apprend aussi les noms complets trouvés dans `target`/`by`
+  (`statChecks`).
+
+Site : un compteur HV (329, 330 ou 919) > 0 vu par un officier (`stat_checks`) = cas « Hôtel des ventes (serveur) »,
+preuve serveur ; s'il était déjà > 0 au premier relevé connu, le cas le précise (« utilisé avant l'entrée ? ») ; une
+valeur envoyée par le joueur (`server_stats`) inférieure à celle vue par un officier au même moment ou après
+(compteurs croissants) = cas « Statistiques falsifiées » (gravité haute).
