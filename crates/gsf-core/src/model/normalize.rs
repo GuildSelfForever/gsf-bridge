@@ -534,7 +534,7 @@ fn build_guild(key: String, group: &Group) -> GuildData {
                 Some(at),
                 ServerStats {
                     level: int_in(rec, "lvl", 1, MAX_AUDIT_LEVEL),
-                    stats: stat_map(rec.get("s")),
+                    stats: stat_map(rec),
                     character,
                     at,
                 },
@@ -1244,9 +1244,19 @@ fn stat_bound(id: &str) -> i64 {
     }
 }
 
-/// Table `s` (`serverStats`/`statChecks`) → uniquement les 13 identifiants autorisés, valeurs entières ≥ 0 ;
-/// identifiant hors liste ou valeur invalide/négative/hors borne = clé abandonnée seule.
-fn stat_map(v: Option<&Value>) -> BTreeMap<String, u64> {
+/// `serverStats`/`statChecks` : champ `stats` (chaîne compacte, addon ≥ 0.23.0 2e revue, contrat
+/// 2026-11-10) en priorité, table `s` (forme antérieure, fixtures/anciennes SavedVariables) en repli.
+/// Uniquement les 13 identifiants autorisés, valeurs entières ≥ 0 et dans leur borne ; identifiant hors
+/// liste, paire malformée ou valeur hors borne = paire abandonnée seule, jamais tout l'enregistrement.
+fn stat_map(rec: &Value) -> BTreeMap<String, u64> {
+    if let Some(s) = text(rec, "stats") {
+        return parse_compact_stats(&s);
+    }
+    stat_table(rec.get("s"))
+}
+
+/// Table `s` (forme antérieure de `stats`) → voir [`stat_map`].
+fn stat_table(v: Option<&Value>) -> BTreeMap<String, u64> {
     entries(v)
         .filter_map(|(k, val)| {
             let id = k.as_str_lossy()?.into_owned();
@@ -1255,6 +1265,24 @@ fn stat_map(v: Option<&Value>) -> BTreeMap<String, u64> {
             }
             let n = val.as_i64()?;
             (0..=stat_bound(&id)).contains(&n).then_some((id, n as u64))
+        })
+        .collect()
+}
+
+/// Chaîne compacte `"<id>:<valeur>,...[,played:<secondes>]"` (addon ≥ 0.23.0 2e revue) → voir
+/// [`stat_map`]. Une paire sans `:`, à identifiant hors liste ou à valeur non entière/négative/hors borne
+/// est abandonnée seule ; les autres paires de la même chaîne restent.
+fn parse_compact_stats(s: &str) -> BTreeMap<String, u64> {
+    s.split(',')
+        .filter_map(|pair| {
+            let (id, value) = pair.split_once(':')?;
+            if !ALLOWED_STAT_IDS.contains(&id) {
+                return None;
+            }
+            let n: i64 = value.parse().ok()?;
+            (0..=stat_bound(id))
+                .contains(&n)
+                .then_some((id.to_string(), n as u64))
         })
         .collect()
 }
@@ -1275,7 +1303,7 @@ fn stat_check(key: &str, rec: &Value, r: &mut Resolver) -> StatCheck {
         at: int(rec, "at").unwrap_or(0),
         how: enum_field(rec, "how", STAT_CHECK_HOW),
         level: int_in(rec, "lvl", 1, MAX_AUDIT_LEVEL),
-        stats: stat_map(rec.get("s")),
+        stats: stat_map(rec),
     }
 }
 const MAX_COUNT: i64 = 1_000_000;

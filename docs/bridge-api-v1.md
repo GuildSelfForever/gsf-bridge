@@ -1097,17 +1097,19 @@ entier ≥ 0, borné à 100 000 000 s (≈ 3 169 ans) au lieu de la borne large 
 ### SavedVariables (profil de guilde de l'addon, ≥ 0.23.0)
 
 ```lua
-serverStats["<ownKey>"] = { at = <epoch>, lvl = <int>, s = { ["329"] = <int>, ["330"] = <int>, ["919"] = <cuivre>,
-  ["331"] = <cuivre>, ["332"] = <cuivre>, ["1148"] = <cuivre>, ["328"] = <cuivre>, ["333"] = <cuivre>,
-  ["326"] = <cuivre>, ["921"] = <cuivre>, ["98"] = <int>, ["334"] = <cuivre>, ["played"] = <secondes> } }
+serverStats["<ownKey>"] = { at = <epoch>, lvl = <int>,
+  stats = "329:0,330:0,919:0,331:0,332:0,1148:3090,328:428550,333:29709,326:112235,921:286606,98:272,334:950000,played:1036800" }
   -- relevé par le joueur lui-même à la connexion et toutes les 30 min ; pas de nouveau message, les valeurs
   -- voyagent dans le rapport d'audit existant (même relais vers les officiers/collecteurs) et chaque
   -- officier/collecteur qui le reçoit les range dans serverStats[<clé du joueur>] (dernière valeur par joueur,
-  -- cap 800 joueurs, TTL 30 j) ; le joueur garde aussi la sienne.
+  -- cap 150 joueurs, TTL 21 j côté addon ; contrat : maxima 800 / 30 j) ; le joueur garde aussi la sienne.
 statChecks["<targetKey>:<at>"] = { target = "Key", by = "OfficerKey", at = <epoch>, how = "auto" | "manual",
-  lvl = <int> | nil, s = { ...mêmes clés... } }
-  -- comparaison faite par un officier sur un autre joueur (cap 200, TTL 30 j)
+  lvl = <int> | nil, stats = "...mêmes paires..." }
+  -- comparaison faite par un officier sur un autre joueur (cap 60, TTL 21 j côté addon ; contrat : maxima
+  -- 200 / 30 j)
 ```
+
+`stats` : chaîne compacte `"<id>:<valeur>,...[,played:<secondes>]"` dans l'ordre des identifiants autorisés, `played` en dernier quand connu (addon ≥ 0.23.0, 2e revue : une table imbriquée coûtait trop cher en SavedVariables). Le bridge lit `stats` en priorité et retombe sur une table `s = { [id] = valeur, ... }` (forme antérieure) si `stats` est absent, pour ne jamais casser une fixture ou une ancienne version de l'addon.
 
 ### `GuildData` (snapshot bridge → site)
 
@@ -1120,8 +1122,8 @@ statChecks["<targetKey>:<at>"] = { target = "Key", by = "OfficerKey", at = <epoc
 ```
 
 - `stats` : uniquement les 13 identifiants ci-dessus (chaînes), valeurs entières ≥ 0 (cuivre pour les montants,
-  secondes pour `played`, borné à 100 000 000) ; identifiant hors liste ou valeur négative/hors borne = clé
-  abandonnée seule, jamais tout l'enregistrement.
+  secondes pour `played`, borné à 100 000 000) ; identifiant hors liste, paire malformée (pas de `:`) ou valeur
+  négative/hors borne = paire abandonnée seule, jamais tout l'enregistrement.
 - `server_stats` (défaut liste vide) : depuis un bridge officier/collecteur pour n'importe quel membre (relayé par
   l'audit, donc déclaré par le joueur), depuis un bridge de simple membre seulement pour ses propres personnages
   (ajouté à `snapshot::MEMBER_GUILD_KEYS`, le site filtre aux personnages du compte qui envoie). Fusionné entre

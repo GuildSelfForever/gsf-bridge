@@ -122,12 +122,14 @@ pub struct GuildData {
     /// `serverStats["<ownKey>"]` (addon ≥ 0.23.0, contrat 2026-11-10 « statistiques du serveur ») :
     /// statistiques Forever relevées en jeu par le joueur lui-même (`GetStatistic`), transportées par le
     /// rapport d'audit existant (aucun nouveau message), rangées par chaque officier/collecteur qui le reçoit.
-    /// Fusionné par personnage, le plus récent `at` gagne, en entier. ≤ 800 joueurs, 30 jours côté addon.
+    /// Fusionné par personnage, le plus récent `at` gagne, en entier. ≤ 150 joueurs, 21 jours côté addon
+    /// (contrat : maxima 800 / 30 jours).
     pub server_stats: Vec<ServerStats>,
     /// `statChecks["<targetKey>:<at>"]` (addon ≥ 0.23.0, contrat 2026-11-10 « statistiques du serveur ») :
     /// comparaison de statistiques faite par un officier sur un autre joueur (`GetComparisonStatistic`).
-    /// Fusionné par identifiant (clé brute des SavedVariables). ≤ 200, 30 jours côté addon. Jamais envoyé par
-    /// un bridge de simple membre (`snapshot::MEMBER_GUILD_KEYS` inchangé pour cette clé).
+    /// Fusionné par identifiant (clé brute des SavedVariables). ≤ 60, 21 jours côté addon (contrat : maxima
+    /// 200 / 30 jours). Jamais envoyé par un bridge de simple membre (`snapshot::MEMBER_GUILD_KEYS`
+    /// inchangé pour cette clé).
     pub stat_checks: Vec<StatCheck>,
     /// Alias « prénom seul » ambigus, laissés sans rattachement.
     pub unresolved_aliases: Vec<UnresolvedAlias>,

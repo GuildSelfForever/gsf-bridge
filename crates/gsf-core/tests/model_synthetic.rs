@@ -1186,13 +1186,14 @@ GuildFoundForeverDB = {
         ["kael ombre"] = { ["name"] = "Kael Ombre" },
       },
       ["serverStats"] = {
+        -- Forme réelle de l'addon >= 0.23.0 (2e revue) : chaîne compacte `stats`, pas de table `s`.
         ["kael ombre"] = { ["at"] = 200, ["lvl"] = 26,
-          ["s"] = { ["329"] = 20, ["919"] = 1000, ["330"] = -5, ["9999"] = 123, ["334"] = 950000,
-            ["played"] = 1036800 } },
+          ["stats"] = "329:20,919:1000,330:-5,9999:123,334:950000,played:1036800,garbage" },
       },
     },
     ["rone#g"] = {
       ["serverStats"] = {
+        -- Forme antérieure (table `s`), gardée en repli : toujours lue si `stats` est absent.
         ["kael ombre"] = { ["at"] = 100, ["lvl"] = 99,
           ["s"] = { ["329"] = 999999, ["98"] = 272 } },
       },
@@ -1229,17 +1230,21 @@ GuildFoundForeverDB = {
     );
     assert!(
         !kael.stats.contains_key("330"),
-        "valeur négative, clé abandonnée seule"
+        "valeur négative, paire abandonnée seule"
     );
     assert!(
         !kael.stats.contains_key("9999"),
-        "identifiant hors liste fermée, clé abandonnée seule"
+        "identifiant hors liste fermée, paire abandonnée seule"
     );
     assert!(
         !kael.stats.contains_key("98"),
         "absent du relevé gagnant, pas hérité de l'ancien profil"
     );
-    assert_eq!(kael.stats.len(), 4);
+    assert_eq!(
+        kael.stats.len(),
+        4,
+        "329, 919, 334, played gardés ; 330/9999/garbage abandonnés seuls, pas tout l'enregistrement"
+    );
 }
 
 #[test]
@@ -1254,14 +1259,16 @@ GuildFoundForeverDB = {
         ["kael ombre"] = { ["name"] = "Kael Ombre" },
       },
       ["statChecks"] = {
+        -- Forme réelle de l'addon >= 0.23.0 (2e revue) : chaîne compacte `stats`, pas de table `s`.
         ["dorian:1794500000"] = { ["target"] = "Dorian", ["by"] = "Kael Ombre",
           ["at"] = 1794500000, ["how"] = "auto", ["lvl"] = 25,
-          ["s"] = { ["329"] = 20, ["330"] = -5, ["9999"] = 1, ["played"] = 999999999 } },
+          ["stats"] = "329:20,330:-5,9999:1,played:999999999" },
         ["kael ombre:5"] = { ["by"] = "Dorian", ["at"] = 5, ["how"] = "bogus" },
       },
     },
     ["rone#g"] = {
       ["statChecks"] = {
+        -- Forme antérieure (table `s`), gardée en repli : toujours lue si `stats` est absent.
         ["dorian:1794500000"] = { ["target"] = "Dorian", ["by"] = "Kael Ombre",
           ["at"] = 1794500000, ["how"] = "bogus", ["lvl"] = 99,
           ["s"] = { ["329"] = 999 } },
@@ -1289,17 +1296,21 @@ GuildFoundForeverDB = {
     assert_eq!(dorian.stats.get("329"), Some(&20));
     assert!(
         !dorian.stats.contains_key("330"),
-        "valeur négative, clé abandonnée seule"
+        "valeur négative, paire abandonnée seule"
     );
     assert!(
         !dorian.stats.contains_key("9999"),
-        "identifiant hors liste fermée, clé abandonnée seule"
+        "identifiant hors liste fermée, paire abandonnée seule"
     );
     assert!(
         !dorian.stats.contains_key("played"),
-        "played au-delà de sa borne propre (100 000 000 s), clé abandonnée seule"
+        "played au-delà de sa borne propre (100 000 000 s), paire abandonnée seule"
     );
-    assert_eq!(dorian.stats.len(), 1);
+    assert_eq!(
+        dorian.stats.len(),
+        1,
+        "stats=\"...\" (forme compacte réelle de l'addon) parsée correctement"
+    );
 
     let fallback = g
         .stat_checks
