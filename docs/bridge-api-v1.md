@@ -594,9 +594,10 @@ Quand le niveau connu du bridge est « membre simple » (jeton obtenu par la con
 `admin`, et dernières données poussées reçues avec `collector` différent de `true`, y compris tant qu'aucune n'a encore
 été reçue), le bridge n'envoie de chaque guilde que : `guild_key_normalized`, `guild_name`, `realm`, `source_keys`,
 `active`, `writer_version`, `writer_saved_at`, `audit_reports`, `audit_pending`, `bridge_violations`,
-`bridge_local_violations`, `bridge_carried_audits`, `deaths`. Les autres clés sont absentes (le site les ignore déjà pour
-un membre). `snapshot_hash` est calculé sur ce contenu filtré. Un officier, une vigie ou un membre de confiance
-(`collector: true`) envoie tout, comme avant.
+`bridge_local_violations`, `bridge_carried_audits`, `deaths`, `presence_gaps`, `crafted_sightings`, `self_identity`
+(contrat 2026-11-10, bridge 0.8.0). Les autres clés sont absentes (le site les ignore déjà pour un membre),
+notamment `guild_bank_log` : collecteurs seulement, jamais envoyé par un membre simple. `snapshot_hash` est calculé sur
+ce contenu filtré. Un officier, une vigie ou un membre de confiance (`collector: true`) envoie tout, comme avant.
 
 ## Ingestion (site)
 
@@ -1001,3 +1002,82 @@ returns = {
   examiner.
 - Limite : l'identité est déclarée par l'addon du candidat (falsifiable par un addon modifié qui connaîtrait le
   BattleTag de l'ancien joueur) ; le nom du chuchoteur est garanti par le serveur, il faut donc aussi tenir le perso.
+
+---
+
+# Ajout 2026-11-10 : témoins de présence, artisans, journal de banque, identité propre (bridge 0.8.0)
+
+Phase 1 de la refonte anti-triche (plan hors dépôt) : la détection ne doit plus croire le client du joueur audité,
+seulement un signal observé par d'autres ou par le serveur. Additif, `MODEL_VERSION` reste 1 : un ancien bridge
+ignore les nouvelles clés, un ancien site aussi.
+
+## SavedVariables (profil de guilde de l'addon, ≥ 0.23.0)
+
+```lua
+presenceGaps["<suspectKey>:<startedAt>"] = { suspect = "Key", by = "WitnessKey", s = <epoch>, e = <epoch> | nil,
+  lc = <epoch>, m = <minutes>, why = "addon" | "offline" | "witness_offline" | "open", rank = 1 | 2,
+  rem = <int>, enr = true | nil, ever = true | nil, ver = "0.22.50" | nil }
+craftedSightings["<itemId>|<guid>|<holder>|<source>"] = { item = <int>, guid = "Player-6937-0049F204", realm = 6937,
+  cname = "Nom" | nil, ckind = "unknown" | "allied",
+  src = "guild_bank" | "bank_log" | "trade" | "mail" | "bags" | "inspect",
+  holder = "Key" | "guildbank:3", by = "ObserverKey", first = <epoch>, last = <epoch>, n = <int> }
+guildBankLog["<tab>:<readAt>:<i>"] = { tab = 1..8 | 0 (0 = or),
+  k = "deposit" | "withdraw" | "move" | "repair" | "buyTab" | "withdrawForTab", who = "Name", item = <int> | nil,
+  n = <int> | nil, amt = <cuivre> | nil, guid = "Player-…" | nil, at = <epoch approx>, age = <heures>,
+  read = <epoch>, by = "ReaderKey" }
+selfIdentity["<ownKey>"] = { bt = "<32 hex>", acct = "<16 hex>", btag = "Nom#1234", at = <epoch> }
+bridgeRoster[key].guid = "Player-…"   -- facultatif
+```
+
+Plafonds côté addon : `presenceGaps` 300 / 14 j ; `craftedSightings` 300 / 30 j ; `guildBankLog` 500 / 21 j.
+
+## `GuildData` (snapshot bridge → site)
+
+```json
+"presence_gaps": [{ "id": "kael:1794500000:torvi quatre", "suspect": "<CharacterRef>", "witness": "<CharacterRef>",
+  "started_at": 1794500000, "ended_at": 1794501800, "last_check_at": 1794501800, "minutes": 30,
+  "end_reason": "addon", "witness_rank": 1, "reminders": 1, "enrolled": true, "ever_seen": true,
+  "last_version": "0.22.50" }],
+"crafted_sightings": [{ "id": "…", "item_id": 2059, "crafter_guid": "Player-6937-0049F204", "crafter_realm_id": 6937,
+  "crafter_name": null, "crafter_kind": "unknown", "source": "trade", "holder": "<CharacterRef>",
+  "holder_kind": "character", "observer": "<CharacterRef>", "first_seen_at": 1794500000, "last_seen_at": 1794500000,
+  "count": 1 }],
+"guild_bank_log": [{ "id": "3:1794500000:7", "tab": 3, "kind": "deposit", "player": "<CharacterRef>",
+  "player_name": "Kael", "item_id": 2059, "count": 5, "amount": null, "crafter_guid": null,
+  "approx_at": 1794496400, "age_hours": 1, "read_at": 1794500000, "reader": "<CharacterRef>" }],
+"self_identity": [{ "character": "<CharacterRef>", "bt": "<32 hex>", "acct": "<16 hex>", "btag": "Nom#1234",
+  "at": 1794500000 }],
+"bridge_roster": [{ "...existant...": "...", "guid": "Player-6937-0049F204" }]
+```
+
+- `presence_gaps`, `crafted_sightings`, `self_identity` (défaut liste vide) : n'importe quel bridge d'officier, de
+  vigie ou de membre de confiance peut en porter ; ajoutés à `snapshot::MEMBER_GUILD_KEYS`, un membre simple les envoie
+  donc aussi. `guild_bank_log` (`None` si aucun profil n'en a) reste réservé aux collecteurs, jamais envoyé par un
+  membre simple.
+- Identifiants : `guild_bank_log[].id` et `crafted_sightings[].id` reprennent la clé brute des SavedVariables
+  (`"<tab>:<readAt>:<i>"`, `"<itemId>|<guid>|<holder>|<source>"`). `presence_gaps[].id` est recomposé
+  `<suspect>:<started_at>:<witness>` (clés résolues) : la clé brute des SavedVariables (`<suspectKey>:<startedAt>`) ne
+  distingue pas les deux témoins élus pour le même suspect et le même début.
+- `crafted_sightings[].holder_kind` = `"character"` (perso résolu comme les autres références) ou `"guild_bank"`
+  (`holder = "guildbank:<n>"`, onglet de banque de guilde, jamais résolu comme une identité de joueur).
+- Validation champ par champ (valeur invalide = champ abandonné, jamais tout l'enregistrement, sauf le champ qui sert
+  à construire l'identifiant — `s`/`item`/`tab` — où l'enregistrement entier est alors abandonné, fusion impossible
+  sans lui) : GUID `^Player-\d{1,5}-[0-9A-F]{8}$` (`crafted_sightings[].crafter_guid`, `guild_bank_log[].crafter_guid`,
+  `bridge_roster[].guid`) ; listes fermées `end_reason`, `crafter_kind`, `source`, `kind` (ci-dessus) ; entiers bornés
+  (`witness_rank` 1 ou 2, `crafter_realm_id` 1–99999, `tab` 0–8…).
+- Fusion entre profils par identifiant, le plus récent gagne **en entier** (jamais champ par champ) : `presence_gaps`
+  par `ended_at`/`last_check_at` (le plus grand des deux présents), `crafted_sightings` par `last_seen_at`,
+  `guild_bank_log` par `read_at`, `self_identity` par `at` (même règle que `member_identities`).
+- `learn_names` (résolution des alias « prénom seul ») apprend aussi les noms complets trouvés dans `suspect`/`by`
+  (`presence_gaps`), `holder`/`by` (`crafted_sightings`), `who`/`by` (`guild_bank_log`).
+
+## Confidentialité : `member_identities[].btag` n'est plus transmis
+
+Le bridge arrête de transmettre `memberIdentity[clé].btag` au site (champ gardé une version, toujours `None`
+désormais) : un officier ne doit plus voir passer le BattleTag en clair d'un autre joueur via son propre bridge.
+Remplacé par `self_identity` : chaque joueur envoie son propre BattleTag par son propre bridge seulement.
+
+- Site : `self_identity[].btag` accepté seulement si `hash(btag) === bt` de la même entrée **et** si l'envoi vient du
+  compte qui possède ce personnage (jamais celui rapporté par un tiers).
+- `trust` (`officer` | `vigie` | `trusted_member` | `member`, déduit du jeton comme ailleurs dans ce contrat) enregistré
+  sur chaque ligne ingérée de `presence_gaps`, `crafted_sightings`, `guild_bank_log`, `self_identity`.
