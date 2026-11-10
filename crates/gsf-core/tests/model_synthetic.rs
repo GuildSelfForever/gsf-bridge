@@ -1,7 +1,7 @@
 //! Variations de format entre versions de l'addon, sur des fichiers
 //! synthétiques.
 
-use gsf_core::model::{normalize, TombstoneForm};
+use gsf_core::model::{normalize, HolderKind, TombstoneForm};
 use gsf_core::sv::{parse, SavedVariables};
 
 fn sv(src: &str) -> SavedVariables {
@@ -691,84 +691,27 @@ GuildFoundForeverDB = { ["guilds"] = { ["r#g"] = {
 }
 
 #[test]
-fn member_identity_btag_kept_when_valid() {
+fn member_identity_btag_is_no_longer_forwarded() {
+    // Contrat 2026-11-10 : `memberIdentity[].btag` n'est plus transmis au site (remplacé par
+    // `self_identity`, le propre BattleTag envoyé par le propre bridge du joueur). Le champ reste `None`
+    // même si la SavedVariables porte un `btag` valide (gardé une version pour compatibilité descendante).
     let account = sv(r#"
 GuildFoundForeverDB = { ["guilds"] = { ["r#g"] = {
   ["memberIdentity"] = {
-    ["ann bee"] = { ["bt"] = "fa2ce2459aec6c5c0d72ca5991cd4cfd", ["btag"] = "  Davin#54321 ", ["at"] = 1 },
+    ["ann bee"] = { ["bt"] = "fa2ce2459aec6c5c0d72ca5991cd4cfd", ["btag"] = "Davin#54321", ["at"] = 1 },
   },
 } } }
 "#);
     let g = &normalize(&account, NO_CHARS)[0];
     assert_eq!(g.member_identities.len(), 1);
-    assert_eq!(
-        g.member_identities[0].btag.as_deref(),
-        Some("Davin#54321"),
-        "rogné, gardé"
-    );
-}
-
-#[test]
-fn member_identity_btag_rejected_without_hash() {
-    let account = sv(r#"
-GuildFoundForeverDB = { ["guilds"] = { ["r#g"] = {
-  ["memberIdentity"] = {
-    ["ann bee"] = { ["btag"] = "Davin54321", ["at"] = 1 },
-  },
-} } }
-"#);
-    let g = &normalize(&account, NO_CHARS)[0];
-    assert_eq!(
-        g.member_identities[0].btag, None,
-        "pas de `#`, champ seul écarté"
-    );
-}
-
-#[test]
-fn member_identity_btag_rejected_when_too_long() {
-    let long = format!("{}#1234", "a".repeat(62));
-    assert!(long.len() > 64, "fixture invalide : {}", long.len());
-    let account = sv(&format!(
-        r#"
-GuildFoundForeverDB = {{ ["guilds"] = {{ ["r#g"] = {{
-  ["memberIdentity"] = {{
-    ["ann bee"] = {{ ["btag"] = "{long}", ["at"] = 1 }},
-  }},
-}} }} }}
-"#
-    ));
-    let g = &normalize(&account, NO_CHARS)[0];
-    assert_eq!(
-        g.member_identities[0].btag, None,
-        "plus de 64 octets, champ seul écarté"
-    );
-}
-
-#[test]
-fn member_identity_btag_rejected_with_control_character() {
-    let account = sv("GuildFoundForeverDB = { [\"guilds\"] = { [\"r#g\"] = {\n  [\"memberIdentity\"] = {\n    [\"ann bee\"] = { [\"btag\"] = \"Davin#5432\\t1\", [\"at\"] = 1 },\n  },\n} } }\n");
-    let g = &normalize(&account, NO_CHARS)[0];
-    assert_eq!(
-        g.member_identities[0].btag, None,
-        "caractère de contrôle, champ seul écarté"
-    );
-}
-
-#[test]
-fn member_identity_btag_none_when_absent() {
-    let account = sv(r#"
-GuildFoundForeverDB = { ["guilds"] = { ["r#g"] = {
-  ["memberIdentity"] = {
-    ["ann bee"] = { ["bt"] = "fa2ce2459aec6c5c0d72ca5991cd4cfd", ["at"] = 1 },
-  },
-} } }
-"#);
-    let g = &normalize(&account, NO_CHARS)[0];
-    assert_eq!(g.member_identities[0].btag, None, "absent, entrée gardée");
+    assert_eq!(g.member_identities[0].btag, None);
     assert_eq!(
         g.member_identities[0].bt.as_deref(),
-        Some("fa2ce2459aec6c5c0d72ca5991cd4cfd")
+        Some("fa2ce2459aec6c5c0d72ca5991cd4cfd"),
+        "bt continue d'être transmis"
     );
+    let json = serde_json::to_value(g).unwrap();
+    assert!(json["member_identities"][0]["btag"].is_null());
 }
 
 #[test]
@@ -941,4 +884,293 @@ GuildFoundForeverDB = { ["guilds"] = { ["realm#g"] = {
     assert_eq!(with_json["handed_to"][0]["at"], 25);
     let without_json = v.iter().find(|x| x["id"] == "trade_gold-11-2").unwrap();
     assert!(without_json.get("handed_to").is_none(), "omis si vide");
+}
+
+#[test]
+fn bridge_roster_guid_is_read_and_validated() {
+    let account = sv(r#"
+GuildFoundForeverDB = { ["guilds"] = { ["r#g"] = {
+  ["bridgeRoster"] = {
+    ["garou bel"] = { ["name"] = "Garou Bel", ["seenAt"] = 10, ["guid"] = "Player-6937-0049F204" },
+    ["ann bee"] = { ["name"] = "Ann Bee", ["seenAt"] = 10, ["guid"] = "not-a-guid" },
+  },
+} } }
+"#);
+    let g = &normalize(&account, NO_CHARS)[0];
+    let roster = g.bridge_roster.as_ref().unwrap();
+    let garou = roster
+        .iter()
+        .find(|e| e.name.as_deref() == Some("Garou Bel"))
+        .unwrap();
+    assert_eq!(garou.guid.as_deref(), Some("Player-6937-0049F204"));
+    let ann = roster
+        .iter()
+        .find(|e| e.name.as_deref() == Some("Ann Bee"))
+        .unwrap();
+    assert_eq!(ann.guid, None, "forme invalide, champ seul écarté");
+}
+
+#[test]
+fn presence_gaps_cover_valid_invalid_merge_and_alias() {
+    let account = sv(r#"
+GuildFoundForeverDB = {
+  ["lastActiveGuildKey"] = "r one#g",
+  ["guilds"] = {
+    ["r one#g"] = {
+      ["memberPresence"] = {
+        ["kael ombre"] = { ["name"] = "Kael Ombre" },
+        ["kael brute"] = { ["name"] = "Kael Brute" },
+        ["torvi quatre"] = { ["name"] = "Torvi Quatre" },
+      },
+      ["presenceGaps"] = {
+        ["torvi quatre:1794500000"] = { ["suspect"] = "Torvi Quatre", ["by"] = "Kael Ombre",
+          ["s"] = 1794500000, ["e"] = 1794501800, ["lc"] = 1794501800, ["m"] = 30,
+          ["why"] = "addon", ["rank"] = 1, ["rem"] = 1, ["enr"] = true, ["ever"] = true,
+          ["ver"] = "0.22.50" },
+        ["kael:1"] = { ["suspect"] = "Kael", ["by"] = "Torvi Quatre", ["s"] = 1,
+          ["why"] = "bogus", ["rank"] = 9 },
+      },
+    },
+    ["rone#g"] = {
+      ["presenceGaps"] = {
+        ["torvi quatre:1794500000"] = { ["suspect"] = "Torvi Quatre", ["by"] = "Kael Ombre",
+          ["s"] = 1794500000, ["lc"] = 1794501900, ["why"] = "open", ["rank"] = 1 },
+      },
+    },
+  },
+}
+"#);
+    let g = &normalize(&account, NO_CHARS)[0];
+    assert_eq!(g.presence_gaps.len(), 2, "{:?}", g.presence_gaps);
+
+    let torvi = g
+        .presence_gaps
+        .iter()
+        .find(|p| p.started_at == 1_794_500_000)
+        .unwrap();
+    assert_eq!(torvi.suspect.character.as_deref(), Some("torvi quatre"));
+    assert_eq!(torvi.witness.character.as_deref(), Some("kael ombre"));
+    assert_eq!(
+        torvi.last_check_at,
+        Some(1_794_501_900),
+        "profil le plus récent (lc) gagne"
+    );
+    assert_eq!(
+        torvi.end_reason.as_deref(),
+        Some("open"),
+        "fusionné en entier, pas champ par champ"
+    );
+    assert_eq!(torvi.ended_at, None, "pas hérité de l'ancien profil");
+    assert_eq!(torvi.minutes, None, "pas hérité de l'ancien profil");
+    assert_eq!(
+        torvi.id, "torvi quatre:1794500000:kael ombre",
+        "identifiant = suspect:début:témoin"
+    );
+
+    let kael = g.presence_gaps.iter().find(|p| p.started_at == 1).unwrap();
+    assert_eq!(
+        kael.suspect.character, None,
+        "alias ambigu (Kael Ombre / Kael Brute)"
+    );
+    assert_eq!(kael.suspect.candidates, ["kael brute", "kael ombre"]);
+    assert_eq!(
+        kael.end_reason, None,
+        "hors liste fermée, champ seul écarté"
+    );
+    assert_eq!(
+        kael.witness_rank, None,
+        "hors bornes 1|2, champ seul écarté"
+    );
+    assert_eq!(kael.witness.character.as_deref(), Some("torvi quatre"));
+}
+
+#[test]
+fn crafted_sightings_cover_valid_invalid_merge_and_alias() {
+    let account = sv(r#"
+GuildFoundForeverDB = {
+  ["lastActiveGuildKey"] = "r one#g",
+  ["guilds"] = {
+    ["r one#g"] = {
+      ["craftedSightings"] = {
+        ["2059|Player-6937-0049F204|fumée ravine|trade"] = {
+          ["item"] = 2059, ["guid"] = "Player-6937-0049F204", ["realm"] = 6937,
+          ["cname"] = "Fumée Ravine", ["ckind"] = "unknown", ["src"] = "trade",
+          ["holder"] = "Fumée Ravine", ["by"] = "Torvi Quatre", ["first"] = 1794500000,
+          ["last"] = 1794500000, ["n"] = 1,
+        },
+        ["2060|-|guildbank:3|guild_bank"] = {
+          ["item"] = 2060, ["guid"] = "not-a-guid", ["realm"] = 99999999, ["ckind"] = "bogus",
+          ["src"] = "guild_bank", ["holder"] = "guildbank:3", ["by"] = "Torvi Quatre",
+        },
+        ["2061|-|fumée|mail"] = {
+          ["item"] = 2061, ["src"] = "mail", ["holder"] = "Fumée", ["by"] = "Torvi",
+        },
+      },
+    },
+    ["rone#g"] = {
+      ["craftedSightings"] = {
+        ["2059|Player-6937-0049F204|fumée ravine|trade"] = {
+          ["item"] = 2059, ["guid"] = "Player-6937-0049F204", ["realm"] = 6937,
+          ["holder"] = "Fumée Ravine", ["by"] = "Torvi Quatre", ["first"] = 1794500000,
+          ["last"] = 1794600000, ["n"] = 3,
+        },
+      },
+    },
+  },
+}
+"#);
+    let g = &normalize(&account, NO_CHARS)[0];
+    assert_eq!(g.crafted_sightings.len(), 3, "{:?}", g.crafted_sightings);
+
+    let fumee = g
+        .crafted_sightings
+        .iter()
+        .find(|c| c.item_id == 2059)
+        .unwrap();
+    assert_eq!(fumee.holder.character.as_deref(), Some("fumée ravine"));
+    assert_eq!(fumee.observer.character.as_deref(), Some("torvi quatre"));
+    assert_eq!(fumee.holder_kind, HolderKind::Character);
+    assert_eq!(fumee.count, Some(3), "le plus récent `last` gagne");
+    assert_eq!(fumee.last_seen_at, Some(1_794_600_000));
+    assert_eq!(
+        fumee.crafter_name, None,
+        "absent du relevé gagnant, pas hérité"
+    );
+
+    let bank = g
+        .crafted_sightings
+        .iter()
+        .find(|c| c.item_id == 2060)
+        .unwrap();
+    assert_eq!(bank.holder_kind, HolderKind::GuildBank);
+    assert_eq!(
+        bank.holder.character, None,
+        "onglet de banque, pas un perso"
+    );
+    assert_eq!(bank.crafter_guid, None, "GUID mal formé, champ seul écarté");
+    assert_eq!(
+        bank.crafter_realm_id, None,
+        "hors bornes, champ seul écarté"
+    );
+    assert_eq!(
+        bank.crafter_kind, None,
+        "hors liste fermée, champ seul écarté"
+    );
+
+    let alias = g
+        .crafted_sightings
+        .iter()
+        .find(|c| c.item_id == 2061)
+        .unwrap();
+    assert_eq!(
+        alias.holder.character.as_deref(),
+        Some("fumée ravine"),
+        "alias résolu via `holder`/`by` appris ailleurs"
+    );
+    assert_eq!(alias.observer.character.as_deref(), Some("torvi quatre"));
+}
+
+#[test]
+fn guild_bank_log_cover_valid_invalid_merge_and_alias_collector_only() {
+    let account = sv(r#"
+GuildFoundForeverDB = { ["guilds"] = { ["r#g"] = {
+  ["guildBankLog"] = {
+    ["3:1794500000:7"] = { ["tab"] = 3, ["k"] = "deposit", ["who"] = "Kael Ombre", ["item"] = 2059,
+      ["n"] = 5, ["guid"] = "Player-6937-0049F204", ["at"] = 1794496400, ["age"] = 1,
+      ["read"] = 1794500000, ["by"] = "Torvi Quatre" },
+    ["0:1794500000:8"] = { ["tab"] = 0, ["k"] = "bogus", ["who"] = "Kael", ["amt"] = 1000,
+      ["read"] = 1794500000, ["by"] = "Torvi" },
+    ["9:1:1"] = { ["tab"] = 9, ["who"] = "X", ["read"] = 1, ["by"] = "Torvi Quatre" },
+  },
+} } }
+"#);
+    let g = &normalize(&account, NO_CHARS)[0];
+    let log = g
+        .guild_bank_log
+        .as_ref()
+        .expect("un collecteur a lu le journal");
+    assert_eq!(
+        log.len(),
+        2,
+        "tab hors bornes : enregistrement abandonné en entier, {:?}",
+        log
+    );
+
+    let deposit = log.iter().find(|e| e.item_id == Some(2059)).unwrap();
+    assert_eq!(deposit.player.character.as_deref(), Some("kael ombre"));
+    assert_eq!(deposit.player_name.as_deref(), Some("Kael Ombre"));
+    assert_eq!(deposit.reader.character.as_deref(), Some("torvi quatre"));
+    assert_eq!(deposit.kind.as_deref(), Some("deposit"));
+    assert_eq!(
+        deposit.crafter_guid.as_deref(),
+        Some("Player-6937-0049F204")
+    );
+
+    let gold = log.iter().find(|e| e.tab == 0).unwrap();
+    assert_eq!(gold.kind, None, "hors liste fermée, champ seul écarté");
+    assert_eq!(
+        gold.player.character.as_deref(),
+        Some("kael ombre"),
+        "alias résolu via `who`/`by` appris"
+    );
+    assert_eq!(gold.reader.character.as_deref(), Some("torvi quatre"));
+    assert_eq!(gold.amount, Some(1000));
+}
+
+#[test]
+fn self_identity_cover_valid_invalid_merge_and_alias() {
+    let account = sv(r#"
+GuildFoundForeverDB = {
+  ["lastActiveGuildKey"] = "r one#g",
+  ["guilds"] = {
+    ["r one#g"] = {
+      ["memberPresence"] = {
+        ["kael ombre"] = { ["name"] = "Kael Ombre" },
+        ["torvi quatre"] = { ["name"] = "Torvi Quatre" },
+        ["torvi cinq"] = { ["name"] = "Torvi Cinq" },
+      },
+      ["selfIdentity"] = {
+        ["kael ombre"] = { ["bt"] = "fa2ce2459aec6c5c0d72ca5991cd4cfd", ["acct"] = "0123456789abcdef",
+          ["btag"] = "Kael#1234", ["at"] = 50 },
+        ["torvi"] = { ["bt"] = "fa2ce2459aec6c5c0d72ca5991cd4cfd", ["at"] = 1 },
+      },
+    },
+    ["rone#g"] = {
+      ["selfIdentity"] = {
+        ["kael ombre"] = { ["bt"] = "BAD", ["btag"] = "sans dièse", ["at"] = 100 },
+      },
+    },
+  },
+}
+"#);
+    let g = &normalize(&account, NO_CHARS)[0];
+    assert_eq!(g.self_identity.len(), 2, "{:?}", g.self_identity);
+
+    let kael = g
+        .self_identity
+        .iter()
+        .find(|s| s.character.merge_key() == "kael ombre")
+        .unwrap();
+    assert_eq!(
+        kael.at, 100,
+        "le plus récent `at` gagne, tout l'enregistrement"
+    );
+    assert_eq!(kael.bt, None, "invalide (pas hex 32), champ seul écarté");
+    assert_eq!(kael.btag, None, "pas de `#`, champ seul écarté");
+    assert_eq!(kael.acct, None, "absent du relevé gagnant, pas hérité");
+
+    let torvi = g
+        .self_identity
+        .iter()
+        .find(|s| s.character.merge_key() == "?torvi")
+        .unwrap();
+    assert_eq!(
+        torvi.character.character, None,
+        "alias ambigu (Torvi Quatre / Torvi Cinq)"
+    );
+    assert_eq!(torvi.character.candidates, ["torvi cinq", "torvi quatre"]);
+    assert_eq!(
+        torvi.bt.as_deref(),
+        Some("fa2ce2459aec6c5c0d72ca5991cd4cfd")
+    );
 }

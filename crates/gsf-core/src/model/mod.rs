@@ -103,6 +103,22 @@ pub struct GuildData {
     pub collector_sessions: Vec<CollectorSession>,
     /// Décisions de blacklist prises dans l'addon, conservées jusqu'au reçu du site.
     pub blacklist_actions: Vec<BlacklistAction>,
+    /// `presenceGaps["<suspectKey>:<startedAt>"]` (addon ≥ 0.23.0, contrat 2026-11-10) : trou de présence
+    /// relevé par un témoin élu. Fusionné entre profils par identifiant (suspect, début, témoin), le plus
+    /// récent relevé (fin ou dernier contrôle) gagne, en entier. ≤ 300 entrées, 14 jours côté addon.
+    pub presence_gaps: Vec<PresenceGap>,
+    /// `craftedSightings["<itemId>|<guid>|<holder>|<source>"]` (addon ≥ 0.23.0, contrat 2026-11-10) : objet
+    /// fabriqué aperçu hors de la boucle habituelle (banque de guilde, échange, courrier, sac, inspection).
+    /// Fusionné par identifiant, le plus récent `last_seen_at` gagne, en entier. ≤ 300 entrées, 30 jours.
+    pub crafted_sightings: Vec<CraftedSighting>,
+    /// `guildBankLog["<tab>:<readAt>:<i>"]` (addon ≥ 0.23.0, contrat 2026-11-10) : journal de banque de
+    /// guilde, lu par un collecteur seulement à l'ouverture (interaction type 10). `None` si aucun profil
+    /// n'en a (pas de collecteur). Fusionné par identifiant, le plus récent `read_at` gagne. ≤ 500, 21 jours.
+    pub guild_bank_log: Option<Vec<GuildBankLogEntry>>,
+    /// `selfIdentity["<ownKey>"]` (addon ≥ 0.23.0, contrat 2026-11-10) : BattleTag en clair du joueur,
+    /// envoyé par son propre bridge (jamais celui d'un autre). Fusionné par personnage, le plus récent `at`
+    /// gagne, en entier.
+    pub self_identity: Vec<SelfIdentity>,
     /// Alias « prénom seul » ambigus, laissés sans rattachement.
     pub unresolved_aliases: Vec<UnresolvedAlias>,
 }
@@ -148,6 +164,9 @@ pub struct BridgeRosterEntry {
     /// `lastOnlineAt` (addon ≥ 0.17.53) : dernière connexion connue du
     /// serveur, relevée par un officier. La plus récente de tous les relevés.
     pub last_online_at: Option<i64>,
+    /// `guid` (addon ≥ 0.23.0, contrat 2026-11-10) : GUID WoW du personnage
+    /// (`^Player-\d{1,5}-[0-9A-F]{8}$`), `None` si absent ou mal formé.
+    pub guid: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -431,6 +450,11 @@ pub struct CarriedAudit {
 /// de contrôle, doit contenir `#`). Le bridge ne vérifie pas sa cohérence
 /// avec `bt` (fait par l'officier qui écrit les SavedVariables et par le
 /// site) ; champ seul écarté si invalide, l'entrée reste.
+///
+/// Contrat 2026-11-10 : le bridge ne transmet plus `btag` au site (toujours
+/// `None`), remplacé par [`SelfIdentity`] (le propre BattleTag du joueur,
+/// envoyé par son propre bridge). Champ gardé une version pour compatibilité
+/// descendante, sera retiré ensuite.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MemberIdentity {
     pub character: CharacterRef,
@@ -496,4 +520,102 @@ pub struct Death {
     pub at: Option<i64>,
     /// Personnage qui a enregistré la mort.
     pub reporter: Option<String>,
+}
+
+/// `presenceGaps["<suspectKey>:<startedAt>"]` (addon ≥ 0.23.0, contrat 2026-11-10) : trou de présence détecté
+/// par un témoin élu (membre inscrit en ligne sans interruption et muet plus de 15 minutes). `ended_at` reste
+/// `None` tant que le trou n'est pas refermé (confirmation par un second passage roster). `id` recompose
+/// `<suspect>:<started_at>:<witness>` (clés résolues) : deux témoins peuvent ouvrir une entrée pour le même
+/// suspect et le même début, la clé brute des SavedVariables (`suspectKey:startedAt`) ne suffit pas à les
+/// distinguer entre profils.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PresenceGap {
+    pub id: String,
+    pub suspect: CharacterRef,
+    pub witness: CharacterRef,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub last_check_at: Option<i64>,
+    pub minutes: Option<i64>,
+    /// `"addon"` (coupure détectée) | `"offline"` (déconnexion) | `"witness_offline"` (témoin déconnecté) |
+    /// `"open"` (trou en cours).
+    pub end_reason: Option<String>,
+    /// 1 ou 2 : rang d'élection du témoin parmi les deux élus.
+    pub witness_rank: Option<i64>,
+    pub reminders: Option<i64>,
+    pub enrolled: Option<bool>,
+    pub ever_seen: Option<bool>,
+    pub last_version: Option<String>,
+}
+
+/// Qui détient l'objet aperçu dans [`CraftedSighting`] : un personnage, ou un onglet de banque de guilde
+/// (`holder = "guildbank:<n>"` côté SavedVariables, pas une identité de joueur).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HolderKind {
+    Character,
+    GuildBank,
+}
+
+/// `craftedSightings["<itemId>|<guid>|<holder>|<source>"]` (addon ≥ 0.23.0, contrat 2026-11-10) : objet
+/// fabriqué aperçu hors de la boucle de triche habituelle (scan banque de guilde, journal de banque, échange,
+/// courrier reçu, sacs au démarrage, inspection). `id` = clé brute des SavedVariables, déjà un identifiant
+/// stable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CraftedSighting {
+    pub id: String,
+    pub item_id: i64,
+    /// GUID WoW de l'artisan (`^Player-\d{1,5}-[0-9A-F]{8}$`), `None` si absent ou mal formé.
+    pub crafter_guid: Option<String>,
+    pub crafter_realm_id: Option<i64>,
+    pub crafter_name: Option<String>,
+    /// `"unknown"` | `"allied"`.
+    pub crafter_kind: Option<String>,
+    /// `"guild_bank"` | `"bank_log"` | `"trade"` | `"mail"` | `"bags"` | `"inspect"`.
+    pub source: Option<String>,
+    pub holder: CharacterRef,
+    pub holder_kind: HolderKind,
+    pub observer: CharacterRef,
+    pub first_seen_at: Option<i64>,
+    pub last_seen_at: Option<i64>,
+    pub count: Option<i64>,
+}
+
+/// `guildBankLog["<tab>:<readAt>:<i>"]` (addon ≥ 0.23.0, contrat 2026-11-10) : ligne du journal de banque de
+/// guilde, lue par un collecteur seulement à l'ouverture (interaction type 10), dédupliquée côté addon par
+/// chevauchement de signatures. `id` = clé brute des SavedVariables.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GuildBankLogEntry {
+    pub id: String,
+    /// 0 (or) à 8.
+    pub tab: i64,
+    /// `"deposit"` | `"withdraw"` | `"move"` | `"repair"` | `"buyTab"` | `"withdrawForTab"`.
+    pub kind: Option<String>,
+    pub player: CharacterRef,
+    /// Nom affiché tel que lu dans le journal (`who`), pas une identité authentifiée.
+    pub player_name: Option<String>,
+    pub item_id: Option<i64>,
+    pub count: Option<i64>,
+    /// Montant en cuivre (mouvement d'or).
+    pub amount: Option<i64>,
+    /// GUID WoW de l'artisan si l'objet en porte un.
+    pub crafter_guid: Option<String>,
+    /// Horodatage approximatif du mouvement (le journal du jeu n'a qu'un âge en heures).
+    pub approx_at: Option<i64>,
+    pub age_hours: Option<i64>,
+    pub read_at: Option<i64>,
+    pub reader: CharacterRef,
+}
+
+/// `selfIdentity["<ownKey>"]` (addon ≥ 0.23.0, contrat 2026-11-10) : BattleTag et empreinte de compte du
+/// joueur lui-même, envoyés par son propre bridge (jamais celui d'un autre joueur). Remplace le BattleTag en
+/// clair de [`MemberIdentity`], que le bridge ne transmet plus. Fusionné comme `member_identities`, le plus
+/// récent `at` gagne, en entier.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SelfIdentity {
+    pub character: CharacterRef,
+    pub bt: Option<String>,
+    pub acct: Option<String>,
+    pub btag: Option<String>,
+    pub at: i64,
 }

@@ -42,6 +42,35 @@ fn btag_field(v: &Value, k: &str) -> Option<String> {
     (s.len() <= 64 && s.contains('#') && !s.chars().any(|c| c.is_control())).then_some(s)
 }
 
+/// GUID WoW (`^Player-\d{1,5}-[0-9A-F]{8}$`, contrat 2026-11-10) : `None` si absent ou de forme invalide
+/// (champ écarté seul, l'entrée reste).
+fn guid_field(v: &Value, k: &str) -> Option<String> {
+    let s = text(v, k)?;
+    is_player_guid(&s).then_some(s)
+}
+
+fn is_player_guid(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix("Player-") else {
+        return false;
+    };
+    let Some((realm, suffix)) = rest.split_once('-') else {
+        return false;
+    };
+    (1..=5).contains(&realm.len())
+        && realm.bytes().all(|b| b.is_ascii_digit())
+        && suffix.len() == 8
+        && suffix
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b))
+}
+
+/// Champ texte dans une liste fermée de valeurs (énumération de l'addon) : `None` si absent ou hors liste
+/// (champ écarté seul, l'entrée reste).
+fn enum_field(v: &Value, k: &str, allowed: &[&str]) -> Option<String> {
+    let s = text(v, k)?;
+    allowed.contains(&s.as_str()).then_some(s)
+}
+
 /// Champs d'une sous-table, quelles que soient les clés ; vide si absente.
 fn entries<'a>(v: Option<&'a Value>) -> impl Iterator<Item = (&'a Key, &'a Value)> + 'a {
     v.and_then(Value::as_table)
@@ -319,6 +348,27 @@ fn learn_names(r: &mut Resolver, group: &Group) {
                 r.learn(player);
             }
         }
+        for rec in table_values(v.get("presenceGaps")) {
+            for field in ["suspect", "by"] {
+                if let Some(n) = text(rec, field) {
+                    r.learn(&n);
+                }
+            }
+        }
+        for rec in table_values(v.get("craftedSightings")) {
+            for field in ["holder", "by"] {
+                if let Some(n) = text(rec, field) {
+                    r.learn(&n);
+                }
+            }
+        }
+        for rec in table_values(v.get("guildBankLog")) {
+            for field in ["who", "by"] {
+                if let Some(n) = text(rec, field) {
+                    r.learn(&n);
+                }
+            }
+        }
     }
     for b in &group.backups {
         for line in entries(b.value.get("requests")).filter_map(|(_, l)| l.as_bytes()) {
@@ -355,6 +405,10 @@ fn build_guild(key: String, group: &Group) -> GuildData {
     let mut member_identities = Newest::new();
     let mut bank_item_info = Newest::new();
     let mut collector_sessions = Newest::new();
+    let mut presence_gaps = Newest::new();
+    let mut crafted_sightings = Newest::new();
+    let mut guild_bank_log: Option<Newest<GuildBankLogEntry>> = None;
+    let mut self_identity = Newest::new();
     let mut blacklist_actions: BTreeMap<String, BlacklistAction> = BTreeMap::new();
     // Audits reçus du joueur lui-même (authentifiés par le jeu) et audits
     // relayés par un autre membre : le direct l'emporte toujours.
@@ -418,10 +472,49 @@ fn build_guild(key: String, group: &Group) -> GuildData {
                     bt: hex_field(rec, "bt", 32),
                     acct: hex_field(rec, "acct", 16),
                     at,
-                    btag: btag_field(rec, "btag"),
+                    // Contrat 2026-11-10 : plus transmis, voir `selfIdentity`.
+                    btag: None,
                     character,
                 },
             );
+        }
+
+        for (k, rec) in table_entries(v.get("selfIdentity")) {
+            let character = r.resolve(&k, "self_identity");
+            let at = int(rec, "at").unwrap_or(0);
+            self_identity.offer(
+                character.merge_key(),
+                Some(at),
+                SelfIdentity {
+                    bt: hex_field(rec, "bt", 32),
+                    acct: hex_field(rec, "acct", 16),
+                    btag: btag_field(rec, "btag"),
+                    at,
+                    character,
+                },
+            );
+        }
+
+        for (k, rec) in table_entries(v.get("presenceGaps")) {
+            if let Some(g) = presence_gap(&k, rec, &mut r) {
+                let stamp = newest_stamp(g.ended_at, g.last_check_at);
+                presence_gaps.offer(g.id.clone(), stamp, g);
+            }
+        }
+
+        for (k, rec) in table_entries(v.get("craftedSightings")) {
+            if let Some(s) = crafted_sighting(&k, rec, &mut r) {
+                crafted_sightings.offer(s.id.clone(), s.last_seen_at, s);
+            }
+        }
+
+        if let Some(t) = v.get("guildBankLog").filter(|t| t.as_table().is_some()) {
+            let merged = guild_bank_log.get_or_insert_with(Newest::new);
+            for (k, rec) in table_entries(Some(t)) {
+                if let Some(entry) = guild_bank_log_entry(&k, rec, &mut r) {
+                    merged.offer(entry.id.clone(), entry.read_at, entry);
+                }
+            }
         }
 
         for (k, rec) in entries(v.get("bankItemInfo")) {
@@ -543,6 +636,7 @@ fn build_guild(key: String, group: &Group) -> GuildData {
                         level: int(rec, "level"),
                         seen_at: int(rec, "seenAt"),
                         last_online_at,
+                        guid: guid_field(rec, "guid"),
                         character,
                     },
                 );
@@ -892,6 +986,10 @@ fn build_guild(key: String, group: &Group) -> GuildData {
         bank_item_info: bank_item_info.into_vec(),
         collector_sessions: collector_sessions.into_vec(),
         blacklist_actions: blacklist_actions.into_values().collect(),
+        presence_gaps: presence_gaps.into_vec(),
+        crafted_sightings: crafted_sightings.into_vec(),
+        guild_bank_log: guild_bank_log.map(Newest::into_vec),
+        self_identity: self_identity.into_vec(),
         unresolved_aliases: r.into_unresolved(),
     }
 }
@@ -1068,6 +1166,141 @@ fn approval(key: &str, rec: &Value, r: &mut Resolver) -> BankApproval {
         changed_by: text(rec, "changedBy"),
         permanent: false,
     }
+}
+
+/// Listes fermées du contrat 2026-11-10.
+const PRESENCE_END_REASONS: &[&str] = &["addon", "offline", "witness_offline", "open"];
+const CRAFTED_SOURCES: &[&str] = &["guild_bank", "bank_log", "trade", "mail", "bags", "inspect"];
+const CRAFTER_KINDS: &[&str] = &["unknown", "allied"];
+const BANK_LOG_KINDS: &[&str] = &[
+    "deposit",
+    "withdraw",
+    "move",
+    "repair",
+    "buyTab",
+    "withdrawForTab",
+];
+
+/// Bornes du contrat 2026-11-10.
+const MAX_GAP_MINUTES: i64 = 100_000;
+const MAX_REMINDERS: i64 = 1_000;
+const MAX_ITEM_ID: i64 = 999_999_999;
+const MAX_REALM_ID: i64 = 99_999;
+const MAX_BANK_TAB: i64 = 8;
+const MAX_COUNT: i64 = 1_000_000;
+const MAX_AMOUNT: i64 = 1_000_000_000_000;
+const MAX_AGE_HOURS: i64 = 100_000;
+
+/// Plus grand des deux horodatages présents, `None` si aucun des deux (clé de fusion « plus récent gagne »).
+fn newest_stamp(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    a.into_iter().chain(b).max()
+}
+
+/// `presenceGaps["<suspectKey>:<startedAt>"]` → [`PresenceGap`] (contrat 2026-11-10). `None` si `s` (début)
+/// est absent ou invalide : sans lui ni identifiant ni fusion ne sont possibles.
+fn presence_gap(key: &str, rec: &Value, r: &mut Resolver) -> Option<PresenceGap> {
+    let started_at = int_in(rec, "s", 0, i64::MAX)?;
+    let suspect_raw = text(rec, "suspect")
+        .or_else(|| key.split_once(':').map(|(s, _)| s.to_string()))
+        .unwrap_or_default();
+    let suspect = r.resolve(&suspect_raw, "presence_gaps.suspect");
+    let witness = r.resolve(
+        &text(rec, "by").unwrap_or_default(),
+        "presence_gaps.witness",
+    );
+    let id = format!(
+        "{}:{}:{}",
+        suspect.merge_key(),
+        started_at,
+        witness.merge_key()
+    );
+    Some(PresenceGap {
+        id,
+        suspect,
+        witness,
+        started_at,
+        ended_at: int_in(rec, "e", 0, i64::MAX),
+        last_check_at: int_in(rec, "lc", 0, i64::MAX),
+        minutes: int_in(rec, "m", 0, MAX_GAP_MINUTES),
+        end_reason: enum_field(rec, "why", PRESENCE_END_REASONS),
+        witness_rank: int_in(rec, "rank", 1, 2),
+        reminders: int_in(rec, "rem", 0, MAX_REMINDERS),
+        enrolled: boolean(rec, "enr"),
+        ever_seen: boolean(rec, "ever"),
+        last_version: text(rec, "ver"),
+    })
+}
+
+/// Référence au détenteur d'un objet aperçu (`holder`) : un personnage, ou un onglet de banque de guilde
+/// (`"guildbank:<n>"`, jamais résolu comme un personnage).
+fn holder_ref(raw: &str, r: &mut Resolver, ctx: &str) -> (CharacterRef, HolderKind) {
+    if let Some(n) = raw.strip_prefix("guildbank:") {
+        if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) {
+            return (
+                CharacterRef {
+                    raw: raw.to_string(),
+                    character: None,
+                    candidates: Vec::new(),
+                },
+                HolderKind::GuildBank,
+            );
+        }
+    }
+    (r.resolve(raw, ctx), HolderKind::Character)
+}
+
+/// `craftedSightings["<itemId>|<guid>|<holder>|<source>"]` → [`CraftedSighting`] (contrat 2026-11-10). `None`
+/// si `item` est absent ou invalide.
+fn crafted_sighting(key: &str, rec: &Value, r: &mut Resolver) -> Option<CraftedSighting> {
+    let item_id = int_in(rec, "item", 1, MAX_ITEM_ID)?;
+    let (holder, holder_kind) = holder_ref(
+        &text(rec, "holder").unwrap_or_default(),
+        r,
+        "crafted_sightings.holder",
+    );
+    let observer = r.resolve(
+        &text(rec, "by").unwrap_or_default(),
+        "crafted_sightings.observer",
+    );
+    Some(CraftedSighting {
+        id: key.to_string(),
+        item_id,
+        crafter_guid: guid_field(rec, "guid"),
+        crafter_realm_id: int_in(rec, "realm", 1, MAX_REALM_ID),
+        crafter_name: text(rec, "cname"),
+        crafter_kind: enum_field(rec, "ckind", CRAFTER_KINDS),
+        source: enum_field(rec, "src", CRAFTED_SOURCES),
+        holder,
+        holder_kind,
+        observer,
+        first_seen_at: int_in(rec, "first", 0, i64::MAX),
+        last_seen_at: int_in(rec, "last", 0, i64::MAX),
+        count: int_in(rec, "n", 0, MAX_COUNT),
+    })
+}
+
+/// `guildBankLog["<tab>:<readAt>:<i>"]` → [`GuildBankLogEntry`] (contrat 2026-11-10). `None` si `tab` est
+/// absent ou hors bornes (0..=8).
+fn guild_bank_log_entry(key: &str, rec: &Value, r: &mut Resolver) -> Option<GuildBankLogEntry> {
+    let tab = int_in(rec, "tab", 0, MAX_BANK_TAB)?;
+    let who = text(rec, "who").unwrap_or_default();
+    let player = r.resolve(&who, "guild_bank_log.who");
+    let reader = r.resolve(&text(rec, "by").unwrap_or_default(), "guild_bank_log.by");
+    Some(GuildBankLogEntry {
+        id: key.to_string(),
+        tab,
+        kind: enum_field(rec, "k", BANK_LOG_KINDS),
+        player,
+        player_name: (!who.is_empty()).then_some(who),
+        item_id: int_in(rec, "item", 1, MAX_ITEM_ID),
+        count: int_in(rec, "n", 0, MAX_COUNT),
+        amount: int_in(rec, "amt", 0, MAX_AMOUNT),
+        crafter_guid: guid_field(rec, "guid"),
+        approx_at: int_in(rec, "at", 0, i64::MAX),
+        age_hours: int_in(rec, "age", 0, MAX_AGE_HOURS),
+        read_at: int_in(rec, "read", 0, i64::MAX),
+        reader,
+    })
 }
 
 fn slots(v: Option<&Value>) -> Vec<BankSlot> {
