@@ -20,6 +20,8 @@
 //!     },
 //!     requests = { expiryDays = 7 }, -- réglage du site (contrat 2026-10-15), absent si non réglé
 //!     cleared = { { name = "Nom", at = 1700000000 }, ... }, -- « Ce n'est rien » (contrat 2026-10-15)
+//!     audits_settled = { { k = "nom en jeu minuscule", id = "identifiant du rapport" }, ... }, -- audits soldés
+//!                      -- par le site (contrat 2026-11-10 c), absente si rien à écrire
 //!     bannedIdentities = { { bt = "32 hex", acct = "16 hex", reason = "texte", expiresAt = 1800000000 }, ... }, -- ban de la personne (contrat 2026-10-17)
 //!     collectorProofs = { { name = "perso", expiresAt = 1800000000, sig = "512 hex" }, ... }, -- collecteur prouvé (contrat 2026-11-02 b)
 //!     receivedViolations = { "trade_gold-1700000000-123", ... }, -- violations reçues par le site (contrat 2026-11-02 b)
@@ -61,7 +63,15 @@
 //! `|`, `MAX_FEDERATION_GUILDS` au maximum. `requests` (contrat 2026-10-15,
 //! réglage d'expiration des demandes) est écarté si `expiry_days` est hors
 //! de `[1, 60]` ; `cleared` (joueurs blanchis) suit les mêmes règles de nom
-//! que les bans, `MAX_CLEARED` au maximum. `tombola` (contrat 2026-10-16) :
+//! que les bans, `MAX_CLEARED` au maximum. `audits_settled` (contrat
+//! 2026-11-10 c, audits soldés par le site, réservés aux collecteurs) :
+//! chaque entrée garde `k` (clé joueur, nom en jeu minuscule) et `id`
+//! (identifiant du rapport d'audit soldé) seulement si les deux font 1 à
+//! [`MAX_AUDIT_SETTLED_FIELD_BYTES`] octets sans caractère de contrôle ni
+//! `|`, sinon l'entrée est écartée seule ; [`MAX_AUDITS_SETTLED`] au maximum ;
+//! la clé `audits_settled` est omise si absente ou si plus rien n'est valide
+//! (contrairement à `cleared`, toujours présente). `tombola` (contrat
+//! 2026-10-16) :
 //! l'annonce est écartée si son texte dépasse [`MAX_TOMBOLA_ANNOUNCE_BYTES`]
 //! (message du jour de l'addon) ou contient `|`/un caractère de contrôle ;
 //! chaque lot à envoyer suit les règles de nom des bans pour le gagnant,
@@ -157,6 +167,12 @@ pub const MAX_VIOLATION_ID_BYTES: usize = 128;
 /// Retours d'inactifs (contrat 2026-11-04 b) : au plus par liste
 /// (`allowed`, `validated`), comme le site.
 pub const MAX_RETURNS: usize = 500;
+/// Audits soldés par le site (contrat 2026-11-10 c) : défensif, large marge
+/// au-delà des 3000 entrées servies par le site.
+pub const MAX_AUDITS_SETTLED: usize = 5000;
+/// Longueur maximale de `k` (clé joueur) et `id` (identifiant de rapport
+/// d'audit) d'une entrée `audits_settled`, en octets.
+pub const MAX_AUDIT_SETTLED_FIELD_BYTES: usize = 64;
 
 /// Ban tel que servi par le backend (contrat, décision 12) :
 /// `{"name","reason"?,"expiresAt"?}`.
@@ -267,6 +283,16 @@ pub struct CollectorProof {
 pub struct Cleared {
     pub name: String,
     pub at: i64,
+}
+
+/// Audit soldé par le site (contrat 2026-11-10 c), réservé aux collecteurs :
+/// `k` identifie le joueur (clé `WowName` du site, nom en jeu minuscule),
+/// `id` le rapport d'audit soldé ; l'addon s'en sert pour retirer un rapport
+/// du badge de ce joueur.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditSettled {
+    pub k: String,
+    pub id: String,
 }
 
 /// Perso qui peut revenir par « gsf » sans la règle du niveau 1 (contrat
@@ -467,6 +493,11 @@ pub struct PushedData {
     /// contrat. Fait partie du calcul de `version` côté site.
     #[serde(default)]
     pub cleared: Vec<Cleared>,
+    /// Audits soldés par le site (contrat 2026-11-10 c), réservés aux
+    /// collecteurs ; défaut vide pour un ancien contrat ou un membre simple.
+    /// Fait partie du calcul de `version` côté site.
+    #[serde(default)]
+    pub audits_settled: Vec<AuditSettled>,
     /// Tombola du streamer (contrat 2026-10-16) ; absente sans tombola ou
     /// sur un ancien site. Fait partie du calcul de `version` côté site.
     #[serde(default)]
@@ -1307,6 +1338,9 @@ pub fn to_addon_value(data: &PushedData) -> Result<(LuaValue, Vec<String>), Push
         root.push((LuaKey::Name("requests".into()), requests));
     }
     root.push((LuaKey::Name("cleared".into()), LuaValue::Table(cleared)));
+    if let Some(audits_settled) = audits_settled_value(&data.audits_settled, &mut warnings) {
+        root.push((LuaKey::Name("audits_settled".into()), audits_settled));
+    }
     root.push((
         LuaKey::Name("bannedIdentities".into()),
         LuaValue::Table(banned_identities),
@@ -1363,6 +1397,39 @@ fn clean_name(raw: &str) -> Option<&str> {
 
 fn index_key(len: usize) -> LuaKey {
     LuaKey::Index(i64::try_from(len + 1).unwrap_or(i64::MAX))
+}
+
+/// Table Lua `audits_settled` (contrat 2026-11-10 c), `None` si absente ou si
+/// plus rien n'est valide (contrairement à `cleared`, toujours présente) :
+/// chaque entrée validée seule, [`MAX_AUDITS_SETTLED`] au plus.
+fn audits_settled_value(entries: &[AuditSettled], warnings: &mut Vec<String>) -> Option<LuaValue> {
+    let mut out = Vec::new();
+    for (idx, e) in entries.iter().enumerate() {
+        if out.len() == MAX_AUDITS_SETTLED {
+            warnings.push(format!(
+                "{} audit(s) soldé(s) au-delà de {MAX_AUDITS_SETTLED} ignoré(s)",
+                entries.len() - idx
+            ));
+            break;
+        }
+        let k = clean_text(&e.k, MAX_AUDIT_SETTLED_FIELD_BYTES);
+        let id = clean_text(&e.id, MAX_AUDIT_SETTLED_FIELD_BYTES);
+        let (Some(k), Some(id)) = (k, id) else {
+            warnings.push(format!(
+                "audit soldé ignoré (clé ou identifiant invalide) : {:?} / {:?}",
+                e.k, e.id
+            ));
+            continue;
+        };
+        out.push((
+            index_key(out.len()),
+            LuaValue::Table(vec![
+                (LuaKey::Name("k".into()), LuaValue::Str(k)),
+                (LuaKey::Name("id".into()), LuaValue::Str(id)),
+            ]),
+        ));
+    }
+    (!out.is_empty()).then_some(LuaValue::Table(out))
 }
 
 /// Table Lua `returns` (contrat 2026-11-04 b) : chaque entrée validée seule.
@@ -2332,6 +2399,125 @@ mod tests {
             Some("Ann Bee")
         );
         assert_eq!(cleared[0].get("at"), Some(&Value::Int(1_700_000_000)));
+    }
+
+    #[test]
+    fn audits_settled_are_written_and_invalid_entries_filtered() {
+        let mut d = sample();
+        d.audits_settled = vec![
+            AuditSettled {
+                k: "ann bee".into(),
+                id: "report-42".into(),
+            },
+            AuditSettled {
+                k: "bad|key".into(),
+                id: "report-1".into(),
+            },
+            AuditSettled {
+                k: "x".repeat(65),
+                id: "report-2".into(),
+            },
+            AuditSettled {
+                k: "cid".into(),
+                id: "x".repeat(65),
+            },
+            AuditSettled {
+                k: "  ".into(),
+                id: "report-3".into(),
+            },
+        ];
+        let (v, warnings) = to_addon_value(&d).unwrap();
+        assert_eq!(warnings.len(), 6, "{warnings:?}"); // 2 bans + 4 audits soldés invalides
+        let src = assignment("GSF_PushedData", &v);
+        let sv = parse(src.as_bytes()).unwrap();
+        let audits_settled: Vec<&Value> = sv
+            .get("GSF_PushedData")
+            .unwrap()
+            .get("audits_settled")
+            .unwrap()
+            .array()
+            .collect();
+        assert_eq!(audits_settled.len(), 1);
+        assert_eq!(
+            audits_settled[0].get("k").and_then(Value::as_str),
+            Some("ann bee")
+        );
+        assert_eq!(
+            audits_settled[0].get("id").and_then(Value::as_str),
+            Some("report-42")
+        );
+    }
+
+    #[test]
+    fn audits_settled_omitted_when_absent_or_empty_and_capped() {
+        let (v, warnings) = to_addon_value(&sample()).unwrap();
+        let src = assignment("GSF_PushedData", &v);
+        let sv = parse(src.as_bytes()).unwrap();
+        assert!(
+            sv.get("GSF_PushedData")
+                .unwrap()
+                .get("audits_settled")
+                .is_none(),
+            "absente par défaut, contrairement à `cleared`"
+        );
+        assert_eq!(warnings.len(), 2);
+
+        let mut d = sample();
+        d.audits_settled = vec![AuditSettled {
+            k: "bad|key".into(),
+            id: "x".into(),
+        }];
+        let (v, _) = to_addon_value(&d).unwrap();
+        let src = assignment("GSF_PushedData", &v);
+        let sv = parse(src.as_bytes()).unwrap();
+        assert!(
+            sv.get("GSF_PushedData")
+                .unwrap()
+                .get("audits_settled")
+                .is_none(),
+            "omise si plus rien n'est valide"
+        );
+
+        let mut d = sample();
+        for i in 0..(MAX_AUDITS_SETTLED + 5) {
+            d.audits_settled.push(AuditSettled {
+                k: format!("joueur{i}"),
+                id: format!("report{i}"),
+            });
+        }
+        let (v, warnings) = to_addon_value(&d).unwrap();
+        let src = assignment("GSF_PushedData", &v);
+        let sv = parse(src.as_bytes()).unwrap();
+        assert_eq!(
+            sv.get("GSF_PushedData")
+                .unwrap()
+                .get("audits_settled")
+                .unwrap()
+                .as_table()
+                .unwrap()
+                .len(),
+            MAX_AUDITS_SETTLED
+        );
+        assert!(warnings.iter().any(|w| w.contains("audit(s) soldé(s)")));
+    }
+
+    #[test]
+    fn audits_settled_json_field_names_match_the_contract() {
+        // Forme exacte attendue de GET /api/v1/bridge/pushed-data (contrat
+        // 2026-11-10 c) : `audits_settled: [{k, id}]`, en snake_case comme
+        // `cleared`/`allied_guilds`.
+        let d: PushedData = serde_json::from_str(
+            r#"{"schema":1,"guild_key":"realm#home",
+                "audits_settled":[{"k":"ann bee","id":"report-42"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            d.audits_settled,
+            vec![AuditSettled {
+                k: "ann bee".into(),
+                id: "report-42".into(),
+            }]
+        );
     }
 
     #[test]
