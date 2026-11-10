@@ -1139,3 +1139,40 @@ Site : un compteur HV (329, 330 ou 919) > 0 vu par un officier (`stat_checks`) =
 preuve serveur ; s'il était déjà > 0 au premier relevé connu, le cas le précise (« utilisé avant l'entrée ? ») ; une
 valeur envoyée par le joueur (`server_stats`) inférieure à celle vue par un officier au même moment ou après
 (compteurs croissants) = cas « Statistiques falsifiées » (gravité haute).
+
+---
+
+# Ajout 2026-11-10 (c) : audits soldés (§3, `PushedData`, additif, bridge 0.8.1)
+
+Réponse `GET /api/v1/bridge/pushed-data` : clé `audits_settled` **optionnelle**, réservée aux collecteurs
+(officier ou vigie), en snake_case comme `cleared`/`allied_guilds`.
+
+```json
+"audits_settled": [
+  { "k": "annbee", "id": "report-42" }
+]
+```
+
+- `k` : clé joueur, nom en jeu minuscule (clé `WowName` du site). `id` : identifiant du rapport d'audit soldé.
+  L'addon s'en sert pour retirer ce rapport du badge de ce joueur.
+- Mêmes règles que `cleared` pour la validation d'un champ texte (non vide, ≤ 64 octets, sans caractère de
+  contrôle ni `|`) ; une entrée invalide (`k` ou `id`) est écartée seule. Jusqu'à 3000 entrées servies par le
+  site, `MAX_AUDITS_SETTLED = 5000` côté bridge (défensif).
+- Fait partie du hash `version` côté site (comme `cleared`).
+
+Le bridge écrit `GSF_PushedData = { …, audits_settled = { { k = "...", id = "..." }, … } }` : **contrairement à
+`cleared`** (toujours présente, même vide), `audits_settled` est omise si absente du contrat ou si plus rien n'est
+valide, pour ne pas faire réécrire le fichier sans raison.
+
+```lua
+GSF_PushedData = {
+    schema = 1,
+    guildKey = "realm#home",
+    bans = {},
+    alliedGuilds = {},
+    cleared = {},
+    audits_settled = {
+        [1] = { k = "annbee", id = "report-42" },
+    },
+}
+```
