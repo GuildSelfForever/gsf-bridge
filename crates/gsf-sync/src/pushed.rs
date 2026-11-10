@@ -1523,33 +1523,70 @@ fn sanitize_version(version: Option<&str>) -> String {
         .collect()
 }
 
+/// Âge au-delà duquel un `Data.lua` est réécrit même sans changement de
+/// contenu : l'addon montre « Pas de bridge connecté ? » quand `generatedAt`
+/// a plus de 7 jours, alors qu'un membre peut garder le même contenu bien
+/// plus longtemps (rien n'était réécrit tant que la `version` ne bougeait pas).
+pub const DATA_REFRESH_SECS: i64 = 3 * 86_400;
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+/// `generatedAt` d'un `Data.lua` déjà écrit, `None` s'il n'en porte pas.
+fn written_generated_at(src: &str) -> Option<i64> {
+    let rest = &src[src.find("generatedAt = ")? + "generatedAt = ".len()..];
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// Un `Data.lua` est trop vieux s'il porte un `generatedAt` plus ancien que
+/// [`DATA_REFRESH_SECS`] ; sans date lisible, il compte comme récent (même
+/// règle que l'addon).
+fn is_stale(src: &str, now: i64) -> bool {
+    written_generated_at(src).is_some_and(|at| now - at > DATA_REFRESH_SECS)
+}
+
+fn read_data_lua(addons: &Path) -> Option<String> {
+    fs::read(addons.join(DATA_ADDON_DIR).join("Data.lua"))
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+}
+
 /// `true` si chaque dossier contient déjà le `.toc` et un `Data.lua` de la
-/// même `version` (le site change `generated_at` à chaque appel : seule la
-/// version dit s'il faut réécrire).
-fn is_current(addons_dirs: &[PathBuf], version: Option<&str>) -> bool {
+/// même `version`, encore récent (le site change `generated_at` à chaque
+/// appel : la version dit s'il faut réécrire, l'âge force un rafraîchissement
+/// pour que l'addon sache que le bridge tourne toujours).
+fn is_current(addons_dirs: &[PathBuf], version: Option<&str>, now: i64) -> bool {
     let version = sanitize_version(version);
     if version.is_empty() || version == "-" {
         return false;
     }
     let marker = format!("\n-- version : {version}\n");
     addons_dirs.iter().all(|a| {
-        let dir = a.join(DATA_ADDON_DIR);
-        dir.join(format!("{DATA_ADDON_DIR}.toc")).is_file()
-            && fs::read(dir.join("Data.lua"))
-                .ok()
-                .and_then(|b| String::from_utf8(b).ok())
-                .is_some_and(|s| s.contains(&marker))
+        a.join(DATA_ADDON_DIR)
+            .join(format!("{DATA_ADDON_DIR}.toc"))
+            .is_file()
+            && read_data_lua(a).is_some_and(|s| s.contains(&marker) && !is_stale(&s, now))
     })
 }
 
 /// `true` si chaque dossier `Interface/AddOns` donné (non vide) contient
-/// déjà `GuildSelfForever_Data/Data.lua` : condition pour demander au site
-/// « seulement si changé » (`If-None-Match`, contrat 2026-11-02 b).
+/// déjà un `GuildSelfForever_Data/Data.lua` encore récent : condition pour
+/// demander au site « seulement si changé » (`If-None-Match`, contrat
+/// 2026-11-02 b). Trop vieux : le corps complet est redemandé, pour le
+/// réécrire avec un `generatedAt` frais.
 pub fn data_files_present(addons_dirs: &[PathBuf]) -> bool {
+    data_files_present_at(addons_dirs, now_secs())
+}
+
+fn data_files_present_at(addons_dirs: &[PathBuf], now: i64) -> bool {
     !addons_dirs.is_empty()
         && addons_dirs
             .iter()
-            .all(|a| a.join(DATA_ADDON_DIR).join("Data.lua").is_file())
+            .all(|a| read_data_lua(a).is_some_and(|s| !is_stale(&s, now)))
 }
 
 /// Contenu de `Data.lua`.
@@ -1612,7 +1649,7 @@ pub fn write_pushed_data(
     if addons_dirs.is_empty() {
         return Ok((WriteOutcome::NoTarget, warnings));
     }
-    if is_current(addons_dirs, data.version.as_deref()) {
+    if is_current(addons_dirs, data.version.as_deref(), now_secs()) {
         return Ok((WriteOutcome::Unchanged, warnings));
     }
     if detector.is_game_running() {
@@ -1880,6 +1917,39 @@ mod tests {
         fs::write(a.join(DATA_ADDON_DIR).join("Data.lua"), "x").unwrap();
         assert!(data_files_present(std::slice::from_ref(&a)));
         assert!(!data_files_present(&[a.clone(), b]));
+    }
+
+    #[test]
+    fn stale_data_is_refreshed_even_with_the_same_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let data = a.join(DATA_ADDON_DIR);
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join(format!("{DATA_ADDON_DIR}.toc")), "toc").unwrap();
+        let now = 1_800_000_000;
+        let fresh = format!(
+            "-- x\n-- version : abc\nGSF_PushedData = {{\n    generatedAt = {},\n}}\n",
+            now - 86_400
+        );
+        fs::write(data.join("Data.lua"), &fresh).unwrap();
+        assert!(is_current(std::slice::from_ref(&a), Some("abc"), now));
+        assert!(data_files_present_at(std::slice::from_ref(&a), now));
+
+        let old = format!(
+            "-- x\n-- version : abc\nGSF_PushedData = {{\n    generatedAt = {},\n}}\n",
+            now - 4 * 86_400
+        );
+        fs::write(data.join("Data.lua"), &old).unwrap();
+        assert!(!is_current(std::slice::from_ref(&a), Some("abc"), now));
+        assert!(!data_files_present_at(std::slice::from_ref(&a), now));
+
+        // Sans date lisible : compte comme récent (même règle que l'addon).
+        fs::write(
+            data.join("Data.lua"),
+            "-- x\n-- version : abc\nGSF_PushedData = {}\n",
+        )
+        .unwrap();
+        assert!(is_current(std::slice::from_ref(&a), Some("abc"), now));
     }
 
     #[test]
