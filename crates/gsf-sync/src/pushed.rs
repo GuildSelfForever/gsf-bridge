@@ -1295,7 +1295,10 @@ pub fn to_addon_value(data: &PushedData) -> Result<(LuaValue, Vec<String>), Push
             fields.push((LuaKey::Name("reason".into()), LuaValue::Str(reason)));
         }
         if entry.entry_type.as_deref() == Some("avoid") {
-            fields.push((LuaKey::Name("entryType".into()), LuaValue::Str("avoid".into())));
+            fields.push((
+                LuaKey::Name("entryType".into()),
+                LuaValue::Str("avoid".into()),
+            ));
         }
         game_blacklist.push((
             LuaKey::Index(i64::try_from(game_blacklist.len() + 1).unwrap_or(i64::MAX)),
@@ -1359,7 +1362,10 @@ pub fn to_addon_value(data: &PushedData) -> Result<(LuaValue, Vec<String>), Push
             ]),
         ));
     }
-    root.push((LuaKey::Name("avoidList".into()), LuaValue::Table(avoid_list)));
+    root.push((
+        LuaKey::Name("avoidList".into()),
+        LuaValue::Table(avoid_list),
+    ));
     root.push((
         LuaKey::Name("alliedGuilds".into()),
         LuaValue::Table(allied_guilds),
@@ -2047,10 +2053,7 @@ mod tests {
             avoided.get("name").and_then(Value::as_str),
             Some("Joueur Test")
         );
-        assert_eq!(
-            avoided.get("reason").and_then(Value::as_str),
-            Some("Ninja")
-        );
+        assert_eq!(avoided.get("reason").and_then(Value::as_str), Some("Ninja"));
         let receipt = root
             .get("blacklistReceipts")
             .unwrap()
