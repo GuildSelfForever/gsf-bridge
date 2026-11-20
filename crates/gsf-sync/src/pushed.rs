@@ -256,6 +256,14 @@ pub struct GameBlacklistEntry {
     pub target_label: String,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default, rename = "entryType")]
+    pub entry_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AvoidEntry {
+    pub name: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -476,6 +484,8 @@ pub struct PushedData {
     /// Liste ordonnée, recopiée dans cet ordre.
     #[serde(default)]
     pub bans: Vec<Ban>,
+    #[serde(default)]
+    pub avoid_list: Vec<AvoidEntry>,
     /// Autres guildes suivies par le site (fédération) ; défaut vide pour un
     /// ancien contrat ou un site non fédéré. Fait partie du calcul de
     /// `version` côté site.
@@ -1284,6 +1294,9 @@ pub fn to_addon_value(data: &PushedData) -> Result<(LuaValue, Vec<String>), Push
         {
             fields.push((LuaKey::Name("reason".into()), LuaValue::Str(reason)));
         }
+        if entry.entry_type.as_deref() == Some("avoid") {
+            fields.push((LuaKey::Name("entryType".into()), LuaValue::Str("avoid".into())));
+        }
         game_blacklist.push((
             LuaKey::Index(i64::try_from(game_blacklist.len() + 1).unwrap_or(i64::MAX)),
             LuaValue::Table(fields),
@@ -1327,6 +1340,26 @@ pub fn to_addon_value(data: &PushedData) -> Result<(LuaValue, Vec<String>), Push
         root.push((LuaKey::Name("collector".into()), LuaValue::Bool(true)));
     }
     root.push((LuaKey::Name("bans".into()), LuaValue::Table(bans)));
+    let mut avoid_list = Vec::new();
+    for entry in data.avoid_list.iter().take(500) {
+        let Some(name) = clean_text(&entry.name, 80) else {
+            continue;
+        };
+        if !matches!(entry.reason.as_str(), "Toxique" | "Ninja") {
+            continue;
+        }
+        avoid_list.push((
+            LuaKey::Index(i64::try_from(avoid_list.len() + 1).unwrap_or(i64::MAX)),
+            LuaValue::Table(vec![
+                (LuaKey::Name("name".into()), LuaValue::Str(name)),
+                (
+                    LuaKey::Name("reason".into()),
+                    LuaValue::Str(entry.reason.clone()),
+                ),
+            ]),
+        ));
+    }
+    root.push((LuaKey::Name("avoidList".into()), LuaValue::Table(avoid_list)));
     root.push((
         LuaKey::Name("alliedGuilds".into()),
         LuaValue::Table(allied_guilds),
@@ -1985,11 +2018,16 @@ mod tests {
     #[test]
     fn blacklist_entries_and_receipts_reach_the_addon() {
         let mut data = sample();
+        data.avoid_list.push(AvoidEntry {
+            name: "Joueur Test".into(),
+            reason: "Ninja".into(),
+        });
         data.game_blacklist.push(GameBlacklistEntry {
             target_type: "battle_tag".into(),
             target_key: "fa2ce2459aec6c5c0d72ca5991cd4cfd".into(),
             target_label: "Davin#54321".into(),
             reason: Some("Test".into()),
+            entry_type: None,
         });
         data.blacklist_receipts.push(BlacklistReceipt {
             id: "1800000000-12345678".into(),
@@ -2003,6 +2041,15 @@ mod tests {
         assert_eq!(
             entry.get("targetLabel").and_then(Value::as_str),
             Some("Davin#54321")
+        );
+        let avoided = root.get("avoidList").unwrap().array().next().unwrap();
+        assert_eq!(
+            avoided.get("name").and_then(Value::as_str),
+            Some("Joueur Test")
+        );
+        assert_eq!(
+            avoided.get("reason").and_then(Value::as_str),
+            Some("Ninja")
         );
         let receipt = root
             .get("blacklistReceipts")
